@@ -2,7 +2,7 @@
 
 Track 2, seat-234 (trn2.48xlarge, one logical NeuronCore unless stated), 2026-10-10. Model: Wan2.1-T2V-1.3B causal
 DiT from `jerryfeng/StreamDiffusionV2` (`wan_causal_dmd_v2v`), demo config: 512x512, 2 denoising steps, 6-frame KV
-cache. Everything below is measured except the section marked **Projection**.
+cache. Everything below is measured unless it is explicitly labeled a projection (section 7).
 
 ## The short version
 
@@ -13,6 +13,10 @@ cache. Everything below is measured except the section marked **Projection**.
    is moving the KV caches to the device and back.
 3. **Keeping the caches on the device and grouping layers gets it back.** 11.4 ms -> 4.4 ms per block, which is
    the device execution time.
+4. **Measured on the full DiT: 15.1 FPS on one core, 44.5 FPS on four** (DiT only, parity gate still passing),
+   with one 8-layer resident-cache graph per core.
+5. **Measured end to end, pixels in to pixels out, all on Trainium2: 38.4 FPS on four cores**, with the TAEHV
+   encoder and decoder sharing two of those cores.
 
 ![Block latency before and after](../tier2/out/block_latency.png)
 
@@ -100,32 +104,124 @@ All 30 layers as 30 single-layer graphs, 6 chunks of real video, against the ori
 Video: `tier2/out/g2_side_by_side.mp4` (input | CPU reference | Neuron). The Neuron output is visually identical
 to the reference. Cosine drifts down slowly with chunk count; longer runs should be checked.
 
-## 6. Projection (not measured end to end)
+## 6. Full DiT with resident caches: 1 core vs 4 cores (measured)
 
-Built from the measured 4.37 ms per layer with resident caches and 8-layer graphs. Assumptions: all 30 layers
-cost the same as layers 0 to 7; 2 DiT passes per chunk (true for this pipeline, there is no extra cache pass);
-4 output frames per chunk; DiT only.
+The whole DiT as 4 resident-cache graphs (layers 0-7, 8-15, 16-22, 23-29). Each graph is loaded twice, once per
+denoising row, because each row has its own caches. Only the hidden state (3 MB) and the small per-call inputs
+move between graphs. `tier2/g3_pipeline.py`, raw numbers in `tier2/results/g3_pipeline_*.json`.
 
-| Scenario | Time per chunk | FPS | Status |
+| | 1 core | 4 cores | 4 cores, fewer chunks in flight |
 |---|---|---|---|
-| Today: 30 single-layer graphs, caches through host, 1 core | 0.65 s | 6.1 | measured |
-| Resident caches + grouped layers, 1 core | 4.37 ms x 30 x 2 = 0.262 s | **15** | projection |
-| Same, 4 cores (the 2 passes x 2 halves of the stack, one per core) | 0.262 s latency, one chunk out every 0.066 s | **61** | projection |
+| Layout | one process, 4 graphs run in sequence | one process per graph, one core each | same |
+| Jobs in flight | 1 | 6 | 3 |
+| **Steady-state FPS (DiT only)** | **15.1** | **44.5** | 37.6 |
+| Time per chunk (throughput) | 265 ms | 90 ms | 106 ms |
+| Latency of one chunk, submit to final output | 265 ms | 541 ms | 319 ms |
+| Final-latent cosine vs CPU reference (frames 3 to 6) | 0.999977, 0.999972, 0.999963, 0.999960 | identical | identical |
+| Gate 0.999 | pass | pass | pass |
 
-What the projection leaves out, and why it is optimistic:
+- 4 cores give **2.96x** the 1-core throughput. Chunks are fed back to back (the 6-chunk clip looped to 120
+  chunks for the 4-core runs, 40 for 1 core), so all 4 stages work on different chunks at once. The first 5 chunks
+  are excluded from the steady-state figures.
+- The 1-core result, 265 ms per chunk, matches what the block measurements predicted (4.37 ms x 30 x 2 = 262 ms).
+- Mean time per stage call on 4 cores: 44.1, 35.8, 31.3, 31.3 ms for 8, 8, 7, 7 layers. Stage 0 is the
+  bottleneck (2 calls per chunk = 88 ms of the 90 ms period); the other cores wait on it.
+- **Per-core utilisation from neuron-monitor** (1 s samples during the 4-core run; monitor index = core + 2 mod 4):
 
-- **VAE.** Not on Neuron yet. On CPU it dwarfs the DiT: Wan VAE encode 12 s and decode 16 s per chunk, TAEHV
-  decode 0.7 s per chunk (CPU timings taken under load, indicative). `--use_taehv` only replaces the decoder; the
-  encoder is still the full Wan VAE. Real-time needs both on Neuron.
-- **4-core scaling is assumed linear** and assumes the 3 MB hidden state can hop between cores cheaply. Neither is
-  measured. The 4-core figure is throughput; latency per chunk stays 0.26 s.
-- **Cache warm-up in graph.** The resident prototype covers steady state. Filling the 3 sink slots during the
-  first chunks is still done on the host today and has to move into the graph (or a second graph) before the
-  resident version can run a whole session.
-- Session start (a 2-frame chunk), adaptive sink refresh and the 50-frame RoPE rewind are still host / CPU side.
+| Core | Stage (layers) | Monitor index | Utilisation |
+|---|---|---|---|
+| 0 | 0-7 | 2 | 67.5% |
+| 1 | 8-15 | 3 | 67.6% |
+| 2 | 16-22 | 0 | 58.4% |
+| 3 | 23-29 | 1 | 58.5% |
+
+- Throughput vs latency: with 6 jobs in flight a chunk waits in queues (541 ms end to end); with 3 in flight
+  latency drops to 319 ms at 37.6 FPS.
+- Parity covers the frames that have a reference: frame 2 (0.999981, produced during warm-up) and frames 3 to 6
+  through the resident pipeline. The values are the same as the earlier host-cache run to 6 digits.
+- **Warm-up is on the host.** The session start (2-frame chunk, CPU) and the first stream frame of each row
+  (frame 2, the last sink frame) run on the single-layer graphs with host-side caches; their K/V are then loaded
+  into the stage graphs as initial resident state. From frame 3 on the caches never leave the device.
+
+## 6b. End to end including the VAE: 38.4 FPS on 4 cores (measured)
+
+Pixels in, pixels out, everything on Trainium2: TAEHV encode -> DiT (2 passes, 30 blocks) -> TAEHV decode.
+`tier2/g4_e2e.py`, raw numbers in `tier2/results/g4_e2e_4core.json`. The TAEHV graphs are Session C's
+(`tier2/vae_neuron.py`, recompiled on seat-234). They run inside the existing stage processes, on the two
+least-loaded cores: encoder with stage 2 (core 2), decoder with stage 3 (core 3). No extra processes.
+
+| | Value |
+|---|---|
+| **Steady-state end-to-end FPS** | **38.4** |
+| Time per chunk (throughput) | 104 ms |
+| Latency of one chunk, pixels in to pixels out (6 chunks in flight) | 629 ms mean, 924 ms max |
+| Encode call (4 frames) | 19.0 ms |
+| Decode call (4 frames) | 38.9 ms |
+| DiT stage calls | 43.6, 35.8, 31.4, 31.4 ms |
+| Utilisation, cores 0 / 1 / 2 / 3 (monitor index 2 / 3 / 0 / 1) | 58.7% / 58.7% / 64.5% / 56.5% |
+
+- 120 chunks of the looped clip, first 5 excluded. Adding the VAE costs 14% of throughput (44.5 -> 38.4 FPS).
+  Core 3 is now the bottleneck: 2 x 31.4 ms of DiT plus 38.9 ms of decode is 102 ms of the 104 ms period.
+- TAEHV latents are rescaled to the pipeline's raw-latent convention (`lat * std + mean`), and the encoder is fed
+  with its 3 frames of lookahead (TAEHV chunk f = pixel frames 4f..4f+3), as Session C's report describes.
+- **Visual check:** `tier2/out/e2e_4core.mp4` (input | output) and `tier2/out/e2e_contact.png`. The output matches
+  the G2 video in style and follows the input's motion frame for frame. There is **no numeric parity figure** for
+  this run: it uses the TAEHV encoder and fresh noise, so it is not comparable sample-for-sample with the CPU
+  reference. DiT parity is covered by section 6; VAE parity by Session C's report.
+- Not timed in this figure: reading/decoding the source video and colour conversion to uint8 for display. Warm-up
+  (first 3 latent frames) is done before the timed loop: KV caches as in section 6, encoder state from pixel
+  chunks 0 to 2, decoder state from the 3 warm-up latents.
+- Latency is high because 6 chunks are kept in flight to maximise throughput; the table below has the
+  3-in-flight run.
+
+### Throughput vs latency, end to end (measured)
+
+| Chunks in flight | End-to-end FPS | Chunk latency mean | p99 | max |
+|---|---|---|---|---|
+| 6 | 38.4 | 629 ms | not recorded | 924 ms |
+| 3 | **26.3** | **458 ms** | **505 ms** | 505 ms |
+
+One chunk's own work is about 350 ms (encode 19 ms + 8 DiT stage calls about 285 ms + decode 39 ms + host), so
+latency cannot go much below that with this layout; more chunks in flight buys throughput at the cost of queueing.
+
+## Charts
+
+![DiT only](../tier2/out/fps_waterfall_dit.png)
+
+Same model, 512x512, 2 steps, steady state, cosine >= 0.999 vs CPU reference at every bar. The first bar is the
+measured untuned full model from G2 (0.65 s per chunk). Estimated from block latency and not on the chart: 5.8 FPS
+(one block, caches via host) and 8.6 FPS (resident cache, 1 layer per graph).
+
+![End to end including the VAE](../tier2/out/fps_waterfall_e2e.png)
+
+Same model, 512x512, 2 steps, steady state. Parity: DiT cosine >= 0.999 vs CPU reference; TAEHV cosine >= 0.999 vs
+CPU TAEHV (Session C); end-to-end output checked visually. The first bar, 5.62 FPS, is Session C's measured
+untuned end-to-end run on seat-230 (branch `tier2-g2`, commit `8b92545`): 1 core, 30 per-layer graphs, caches
+through the host; clip looped to 25 chunks, first 5 excluded. The 4-core pipeline is 6.8x that. With 3 chunks in
+flight instead of 6 it runs at 26.3 FPS with 458 ms mean / 505 ms p99 latency.
+
+## 7. What is still projected or missing
+
+- **1-core end to end is not measured.** The end-to-end figure is 4 cores only. From measured parts, 1 core would
+  be about 265 + 19 + 39 = 323 ms per chunk, about 12 FPS (projection).
+- The end-to-end run uses TAEHV for both encode and decode. The repo's default uses the Wan VAE for both, and its
+  `--use_taehv` only swaps the decoder; a TAEHV encoder changes the input latents slightly (Session C measured
+  cosine 0.997 against the Wan encoder). The stylised output looks the same, but that is a visual judgement.
+- **Projection, not measured:** balancing the stages (stage 0 takes 44 ms against 31 ms for stages 2 and 3)
+  should lift the 4-core figure toward 4 / (2 x 35 ms) = about 57 FPS. Not tried.
+- Resident-cache warm-up inside the graph, the adaptive sink refresh and the 50-frame RoPE rewind are still host
+  or CPU side. The looped 120-chunk throughput run simply lets RoPE positions grow to frame 122, where the repo
+  would have rewound at frame 50; that is fine for timing, and parity is only claimed for the first frames.
 
 ## Errors and caveats, verbatim where there was an error
 
+- The first resident pipeline runs failed parity (cosine 0.94 to 0.98). Cause: torch_neuronx re-keys the alias
+  map in module-parameter order while tracing, so the traced states are ordered k0..k7, v0..v7; I had loaded the
+  warmed caches interleaved (k0, v0, k1, ...). Fixed in `g3_pipeline.py:load_stage`; all numbers above are from
+  the fixed runs.
+- Several processes cannot share one NeuronCore:
+  `NRT:nrt_allocate_neuron_cores  Logical Neuron Core(s) not available - Requested:lnc0-lnc0 Available:0 Logical
+  Core size:2 (cores busy, ret=-16)`. The 1-core comparison therefore runs the 4 graphs in one process.
 - Reading an aliased cache back to the host failed:
   `RuntimeError('Expected self.dtype() == dst.dtype() to be true, but got false.  (Could this error message be
   improved?  If so, please report an enhancement request to PyTorch.)')`. Parity was therefore checked through y
