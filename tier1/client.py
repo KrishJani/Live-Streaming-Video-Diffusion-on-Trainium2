@@ -281,6 +281,8 @@ def main():
     ap.add_argument("--record", nargs="?", const="", default=None, metavar="PATH",
                     help="save the side-by-side view to an mp4 (default tier1/out/live_<time>.mp4)")
     ap.add_argument("--duration", type=float, default=0, help="stop after this many seconds (0 = until q)")
+    ap.add_argument("--cycle-styles", type=float, default=0, metavar="SECONDS",
+                    help="switch to the next style automatically every SECONDS (0 = keys only)")
     ap.add_argument("--no-mirror", dest="mirror", action="store_false", help="do not flip the image horizontally")
     ap.add_argument("--no-window", action="store_true", help="run without a window (for automated tests)")
     ap.add_argument("--stats-out", default=str(OUT_DIR / "live_stats.json"))
@@ -310,6 +312,10 @@ def main():
             now = time.perf_counter()
             if args.duration and t_first_frame is not None and now - t_first_frame >= args.duration:
                 break
+            if args.cycle_styles and t_first_frame is not None:
+                with state.lock:
+                    state.style = STYLES[(STYLES.index(args.style) + int((now - t_first_frame) / args.cycle_styles))
+                                         % len(STYLES)]
             with state.lock:
                 cap, styled, server = state.capture, state.styled, dict(state.server)
                 connected, reconnects, style = state.connected, state.reconnects, state.style
@@ -360,7 +366,8 @@ def main():
                     t_first_frame = done
             if t_first_frame is not None and done - t_first_frame > FPS_WINDOW_S:
                 fps_samples.append(fps)
-            if writer is not None and done >= next_record:
+            # nothing is recorded until the first styled frame is on screen
+            if writer is not None and t_first_frame is not None and done >= next_record:
                 writer.write(canvas)
                 next_record = max(next_record + 1 / 30.0, done - 0.1)
     except KeyboardInterrupt:

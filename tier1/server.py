@@ -25,7 +25,7 @@ from collections import deque
 import cv2
 import numpy as np
 
-from common import SIZE, STYLES
+from common import SIZE, SMOOTH, STYLE_STRENGTH, STYLES
 from proto import pack, read_msg
 
 HOST, PORT = "127.0.0.1", 9000
@@ -47,23 +47,23 @@ def frame_change(a, b):
     return float(cv2.resize(diff, (8, 8), interpolation=cv2.INTER_AREA).max())
 
 
-def worker_main(idx, core, in_q, out_q, jpeg_quality):
+def worker_main(idx, core, in_q, out_q, jpeg_quality, smooth):
     os.environ["NEURON_RT_VISIBLE_CORES"] = str(core)
     import torch
     torch.set_num_threads(2)
     cv2.setNumThreads(1)
     from pipeline_neuron import NeuronTurbo
 
-    pipe = NeuronTurbo()
+    pipe = NeuronTurbo(smooth=smooth, strength=STYLE_STRENGTH["anime"])
     pipe.warmup(10)
     out_q.put(("ready", idx))
     while True:
         item = in_q.get()
         if item is None:
             break
-        fid, gen, style, jpeg = item
+        fid, gen, style, jpeg, prev_x0 = item
         t0 = time.perf_counter()
-        out_jpeg, error = None, None
+        out_jpeg, x0, error = None, None, None
         try:
             bgr = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
             if bgr is None:
@@ -72,7 +72,12 @@ def worker_main(idx, core, in_q, out_q, jpeg_quality):
                 bgr = cv2.resize(bgr, (SIZE, SIZE), interpolation=cv2.INTER_AREA)
             if style != pipe.style:
                 pipe.set_style(style)
+                pipe.set_strength(STYLE_STRENGTH[style])
+            # The previous output latent comes from the server: with four workers the frame
+            # before this one was handled by another process.
+            pipe.prev_x0 = torch.from_numpy(prev_x0) if prev_x0 is not None else None
             out = pipe(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+            x0 = pipe.prev_x0.numpy()
             ok, enc = cv2.imencode(".jpg", cv2.cvtColor(out, cv2.COLOR_RGB2BGR),
                                    [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
             if not ok:
@@ -80,7 +85,7 @@ def worker_main(idx, core, in_q, out_q, jpeg_quality):
             out_jpeg = enc.tobytes()
         except Exception as e:  # noqa: BLE001  (a bad frame must not kill the worker)
             error = repr(e)
-        out_q.put(("frame", idx, fid, gen, out_jpeg, (time.perf_counter() - t0) * 1e3, error))
+        out_q.put(("frame", idx, fid, gen, out_jpeg, x0, style, (time.perf_counter() - t0) * 1e3, error))
 
 
 class CoreMonitor(threading.Thread):
@@ -133,7 +138,7 @@ class Server:
         ctx = mp.get_context("spawn")
         self.out_q = ctx.Queue()
         self.in_qs = [ctx.Queue() for _ in CORES]
-        self.procs = [ctx.Process(target=worker_main, args=(i, c, self.in_qs[i], self.out_q, args.jpeg_quality),
+        self.procs = [ctx.Process(target=worker_main, args=(i, c, self.in_qs[i], self.out_q, args.jpeg_quality, args.smooth),
                                   daemon=True) for i, c in enumerate(CORES)]
         self.reset()
 
@@ -144,6 +149,7 @@ class Server:
         self.pending = None                  # (id, style, jpeg, small, t_recv): the one waiting frame
         self.t_recv = {}                     # frame id -> receive time, for frames inside workers
         self.last_small, self.last_style = None, None
+        self.last_x0, self.last_x0_style = None, None   # newest finished output latent
         self.last_sent_id = -1
         self.counts = {"received": 0, "processed": 0, "skipped": 0, "dropped": 0, "stale": 0, "errors": 0}
         self.done_times = deque()            # (t, was_processed) for the rolling rates
@@ -196,7 +202,8 @@ class Server:
         self.busy[w] = fid
         self.t_recv[fid] = t_recv
         self.last_small, self.last_style = small, style
-        self.in_qs[w].put((fid, self.gen, style, jpeg))
+        prev_x0 = self.last_x0 if self.last_x0_style == style else None
+        self.in_qs[w].put((fid, self.gen, style, jpeg, prev_x0))
 
     def on_frame(self, gen, header, jpeg):
         t_recv = time.perf_counter()
@@ -240,7 +247,7 @@ class Server:
         for rid, rstatus in replies:
             self.send(gen, {"type": "result", "id": rid, "status": rstatus, "stats": stats})
 
-    def on_worker_result(self, w, fid, gen, jpeg, service_ms, error):
+    def on_worker_result(self, w, fid, gen, jpeg, x0, style, service_ms, error):
         with self.lock:
             if gen != self.gen:
                 # result for a connection that is gone; reset() already rebuilt the idle list,
@@ -267,6 +274,7 @@ class Server:
                 self.counts["processed"] += 1
                 self.done_times.append((now, True))
                 self.last_sent_id = fid
+                self.last_x0, self.last_x0_style = x0, style
                 status = "ok"
             compute_ms = (now - t_recv) * 1e3 if t_recv is not None else None
             stats = self.stats(now, compute_ms, service_ms, w)
@@ -276,8 +284,8 @@ class Server:
     # ---- threads -------------------------------------------------------------------------
     def collector(self):
         while True:
-            _, w, fid, gen, jpeg, service_ms, error = self.out_q.get()
-            self.on_worker_result(w, fid, gen, jpeg, service_ms, error)
+            _, w, fid, gen, jpeg, x0, style, service_ms, error = self.out_q.get()
+            self.on_worker_result(w, fid, gen, jpeg, x0, style, service_ms, error)
 
     def reader(self, conn, gen):
         try:
@@ -318,7 +326,8 @@ class Server:
         listener.bind((HOST, PORT))
         listener.listen(4)
         print(f"READY on {HOST}:{PORT} after {time.perf_counter() - t0:.1f}s "
-              f"(skip_threshold={self.args.skip_threshold}, jpeg_quality={self.args.jpeg_quality})", flush=True)
+              f"(skip_threshold={self.args.skip_threshold}, jpeg_quality={self.args.jpeg_quality}, "
+              f"smooth={self.args.smooth}, strength={STYLE_STRENGTH})", flush=True)
         while True:
             conn, _ = listener.accept()
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -349,6 +358,8 @@ def main():
                     help="a frame reuses the last output when no block of it differs from the last processed "
                          "frame by more than this mean abs pixel difference (0..255); 0 disables the filter")
     ap.add_argument("--jpeg-quality", type=int, default=80)
+    ap.add_argument("--smooth", type=float, default=SMOOTH,
+                    help="blend of each predicted latent with the newest finished output latent (0 = off)")
     args = ap.parse_args()
     cv2.setNumThreads(1)
     server = Server(args)

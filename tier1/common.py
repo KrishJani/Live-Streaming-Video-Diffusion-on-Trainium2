@@ -39,6 +39,12 @@ STYLES = {
                  "hard edges, dithered shading",
 }
 
+# Demo defaults picked from the quality sweep on a real webcam clip (reports/tier1_quality.json):
+# one strength per style (the non-anime styles need more noise to show), and each predicted x0
+# latent is blended with the previous output latent to calm frame-to-frame flicker.
+STYLE_STRENGTH = {"anime": 0.55, "oil_painting": 0.65, "claymation": 0.75, "pixel_art": 0.75}
+SMOOTH = 0.35
+
 # First version of the prompts; the CPU reference (tier1/out/reference) was generated with these.
 STYLES_V1 = {
     "anime": "anime key visual, cel shaded, clean bold line art, vibrant flat colors, "
