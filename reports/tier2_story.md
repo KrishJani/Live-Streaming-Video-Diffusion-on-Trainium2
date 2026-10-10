@@ -15,6 +15,8 @@ cache. Everything below is measured unless it is explicitly labeled a projection
    the device execution time.
 4. **Measured on the full DiT: 15.1 FPS on one core, 44.5 FPS on four** (DiT only, parity gate still passing),
    with one 8-layer resident-cache graph per core.
+5. **Measured end to end, pixels in to pixels out, all on Trainium2: 38.4 FPS on four cores**, with the TAEHV
+   encoder and decoder sharing two of those cores.
 
 ![Block latency before and after](../tier2/out/block_latency.png)
 
@@ -141,16 +143,49 @@ move between graphs. `tier2/g3_pipeline.py`, raw numbers in `tier2/results/g3_pi
   (frame 2, the last sink frame) run on the single-layer graphs with host-side caches; their K/V are then loaded
   into the stage graphs as initial resident state. From frame 3 on the caches never leave the device.
 
-![DiT FPS step by step](../tier2/out/fps_waterfall.png)
+## 6b. End to end including the VAE: 38.4 FPS on 4 cores (measured)
 
-The first two bars are derived from measured block latency (latency x 30 layers x 2 passes); the last two are
-measured on the full DiT.
+Pixels in, pixels out, everything on Trainium2: TAEHV encode -> DiT (2 passes, 30 blocks) -> TAEHV decode.
+`tier2/g4_e2e.py`, raw numbers in `tier2/results/g4_e2e_4core.json`. The TAEHV graphs are Session C's
+(`tier2/vae_neuron.py`, recompiled on seat-234). They run inside the existing stage processes, on the two
+least-loaded cores: encoder with stage 2 (core 2), decoder with stage 3 (core 3). No extra processes.
+
+| | Value |
+|---|---|
+| **Steady-state end-to-end FPS** | **38.4** |
+| Time per chunk (throughput) | 104 ms |
+| Latency of one chunk, pixels in to pixels out (6 chunks in flight) | 629 ms mean, 924 ms max |
+| Encode call (4 frames) | 19.0 ms |
+| Decode call (4 frames) | 38.9 ms |
+| DiT stage calls | 43.6, 35.8, 31.4, 31.4 ms |
+| Utilisation, cores 0 / 1 / 2 / 3 (monitor index 2 / 3 / 0 / 1) | 58.7% / 58.7% / 64.5% / 56.5% |
+
+- 120 chunks of the looped clip, first 5 excluded. Adding the VAE costs 14% of throughput (44.5 -> 38.4 FPS).
+  Core 3 is now the bottleneck: 2 x 31.4 ms of DiT plus 38.9 ms of decode is 102 ms of the 104 ms period.
+- TAEHV latents are rescaled to the pipeline's raw-latent convention (`lat * std + mean`), and the encoder is fed
+  with its 3 frames of lookahead (TAEHV chunk f = pixel frames 4f..4f+3), as Session C's report describes.
+- **Visual check:** `tier2/out/e2e_4core.mp4` (input | output) and `tier2/out/e2e_contact.png`. The output matches
+  the G2 video in style and follows the input's motion frame for frame. There is **no numeric parity figure** for
+  this run: it uses the TAEHV encoder and fresh noise, so it is not comparable sample-for-sample with the CPU
+  reference. DiT parity is covered by section 6; VAE parity by Session C's report.
+- Not timed in this figure: reading/decoding the source video and colour conversion to uint8 for display. Warm-up
+  (first 3 latent frames) is done before the timed loop: KV caches as in section 6, encoder state from pixel
+  chunks 0 to 2, decoder state from the 3 warm-up latents.
+- Latency is high because 6 chunks are kept in flight to maximise throughput; section 6 shows the trade-off
+  (3 in flight roughly halves latency for about 15% less throughput). Not re-measured with the VAE.
+
+![FPS step by step](../tier2/out/fps_waterfall.png)
+
+The first two bars are derived from measured block latency (latency x 30 layers x 2 passes); the last three are
+measured on the full model, and only the last one includes the VAE.
 
 ## 7. What is still projected or missing
 
-- **End-to-end FPS is not measured.** All FPS figures here are DiT only. The VAE is not on Neuron in this track;
-  on CPU it dwarfs the DiT (Wan VAE encode 12 s and decode 16 s per chunk, TAEHV decode 0.7 s per chunk; CPU
-  timings taken under load, indicative). `--use_taehv` only replaces the decoder.
+- **1-core end to end is not measured.** The end-to-end figure is 4 cores only. From measured parts, 1 core would
+  be about 265 + 19 + 39 = 323 ms per chunk, about 12 FPS (projection).
+- The end-to-end run uses TAEHV for both encode and decode. The repo's default uses the Wan VAE for both, and its
+  `--use_taehv` only swaps the decoder; a TAEHV encoder changes the input latents slightly (Session C measured
+  cosine 0.997 against the Wan encoder). The stylised output looks the same, but that is a visual judgement.
 - **Projection, not measured:** balancing the stages (stage 0 takes 44 ms against 31 ms for stages 2 and 3)
   should lift the 4-core figure toward 4 / (2 x 35 ms) = about 57 FPS. Not tried.
 - Resident-cache warm-up inside the graph, the adaptive sink refresh and the 50-frame RoPE rewind are still host

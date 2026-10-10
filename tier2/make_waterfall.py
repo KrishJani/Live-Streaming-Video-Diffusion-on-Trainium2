@@ -1,4 +1,4 @@
-"""tier2/out/fps_waterfall.png: DiT-only FPS at each engineering step (run in the pod; reads measured JSONs)."""
+"""tier2/out/fps_waterfall.png: FPS at each engineering step (run in the pod; reads measured JSONs)."""
 import json
 
 from PIL import Image, ImageDraw, ImageFont
@@ -13,12 +13,14 @@ g1 = json.load(open(ART_DIR / f"g1_block0_{TAG}_bench.json"))["latency_ms"]["mea
 r1 = json.load(open(ART_DIR / "g2_resident_1layers.json"))["latency_ms_call_plus_y_to_host"]["mean"]
 one = json.load(open(ART_DIR / "g3_pipeline_1core.json"))["steady_state_fps"]
 four = json.load(open(ART_DIR / "g3_pipeline_4core.json"))["steady_state_fps"]
+e2e = json.load(open(ART_DIR / "g4_e2e_4core.json"))["steady_state_fps"]
 
 steps = [
     ("G1 baseline", "caches via host", fps_from_block(g1), "from block latency"),
     ("Resident KV cache", "1 layer per graph", fps_from_block(r1), "from block latency"),
     ("8-layer graphs", "4 graphs, 1 core", one, "measured, full DiT"),
     ("4-core pipeline", "1 graph per core", four, "measured, full DiT"),
+    ("End to end, 4 cores", "incl. TAEHV enc + dec", e2e, "measured, pixels to pixels"),
 ]
 
 S = 2
@@ -27,8 +29,8 @@ SURFACE, INK, INK2, GRID, BAR = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df", "#2a
 img = Image.new("RGB", (W, H), SURFACE)
 d = ImageDraw.Draw(img)
 f_title, f_lab, f_small, f_val = (ImageFont.load_default(size=s * S) for s in (22, 16, 13, 20))
-d.text((40 * S, 22 * S), "DiT frames per second on Trainium2, step by step", font=f_title, fill=INK)
-d.text((40 * S, 54 * S), "Wan2.1-1.3B causal DiT, 512x512, 2 denoising passes per chunk, 4 frames per chunk. VAE not included.",
+d.text((40 * S, 22 * S), "Frames per second on Trainium2, step by step", font=f_title, fill=INK)
+d.text((40 * S, 54 * S), "Wan2.1-1.3B causal DiT, 512x512, 2 denoising passes per chunk, 4 frames per chunk. Only the last bar includes the VAE.",
        font=f_small, fill=INK2)
 
 x0, x1, base, top = 90 * S, W - 40 * S, H - 110 * S, 110 * S
