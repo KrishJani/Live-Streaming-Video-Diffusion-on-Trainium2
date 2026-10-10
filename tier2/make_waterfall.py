@@ -3,7 +3,7 @@
     python make_waterfall.py [untuned_end_to_end_fps]
 
 tier2/out/fps_waterfall_dit.png   DiT only: untuned full model (G2) -> resident caches + 8-layer graphs -> 4 cores
-tier2/out/fps_waterfall_e2e.png   end to end incl. VAE: untuned baseline (Session C; placeholder until given) -> 4 cores
+tier2/out/fps_waterfall_e2e.png   end to end incl. VAE: untuned baseline (Session C, 5.62 FPS by default) -> 4 cores
 """
 import json
 import sys
@@ -28,7 +28,8 @@ e2e = json.load(open(ART_DIR / "g4_e2e_4core.json"))["steady_state_fps"]
 g1 = json.load(open(ART_DIR / f"g1_block0_{TAG}_bench.json"))["latency_ms"]["mean"]
 r1 = json.load(open(ART_DIR / "g2_resident_1layers.json"))["latency_ms_call_plus_y_to_host"]["mean"]
 est = lambda ms: 4 / (ms / 1e3 * 30 * 2)
-e2e_base = float(sys.argv[1]) if len(sys.argv) > 1 else None
+# Untuned end-to-end baseline: Session C's looped-clip run on seat-230 (branch tier2-g2, commit 8b92545).
+e2e_base = float(sys.argv[1]) if len(sys.argv) > 1 else 5.62
 
 
 def draw(path, title, steps, caption, footnote, ymax):
@@ -64,7 +65,8 @@ def draw(path, title, steps, caption, footnote, ymax):
                 d.text((cx - slot / 2, py(max(fps, prev)) - 14 * S), f"x{fps / prev:.1f}", font=f_lab, fill=INK2, anchor="mb")
             prev = fps
         d.text((cx, base + 12 * S), name, font=f_lab, fill=INK, anchor="ma")
-        d.text((cx, base + 36 * S), sub, font=f_small, fill=INK2, anchor="ma")
+        for k, line in enumerate(sub.split("\n")):
+            d.text((cx, base + (36 + 20 * k) * S), line, font=f_small, fill=INK2, anchor="ma")
     d.text((40 * S, H - 86 * S), caption, font=f_small, fill=INK)
     if footnote:
         d.text((40 * S, H - 58 * S), footnote, font=f_small, fill=INK2)
@@ -81,8 +83,10 @@ draw("fps_waterfall_dit.png", "Causal Wan DiT on Trainium2: frames per second, D
      f"{est(r1):.1f} FPS (resident cache, 1 layer per graph).", 50.0)
 
 draw("fps_waterfall_e2e.png", "Video to video on Trainium2: frames per second, end to end including the VAE",
-     [("Untuned end to end", "Session C, seat-230" if e2e_base is None else "Session C, seat-230, measured", e2e_base),
-      ("4-core pipeline + TAEHV encode / decode", "pixels in to pixels out", e2e)],
+     [("Untuned end to end", "untuned, 1 core, 30 per-layer graphs, caches through host;\n"
+                             "clip looped to 25 chunks, first 5 excluded", e2e_base),
+      ("4-core pipeline + TAEHV encode / decode", "pixels in to pixels out\n"
+       "3 chunks in flight: 26.3 FPS, 458 ms mean / 505 ms p99 latency", e2e)],
      "Same model, 512x512, 2 steps, steady state. Parity: DiT cosine >= 0.999 vs CPU reference; TAEHV cosine >= 0.999 "
      "vs CPU TAEHV; end-to-end output checked visually.", None, 50.0)
 print("WATERFALLS OK", {"untuned": round(untuned, 2), "one": one, "four": four, "e2e": e2e, "e2e_base": e2e_base})

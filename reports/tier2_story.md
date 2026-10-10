@@ -195,9 +195,10 @@ measured untuned full model from G2 (0.65 s per chunk). Estimated from block lat
 ![End to end including the VAE](../tier2/out/fps_waterfall_e2e.png)
 
 Same model, 512x512, 2 steps, steady state. Parity: DiT cosine >= 0.999 vs CPU reference; TAEHV cosine >= 0.999 vs
-CPU TAEHV (Session C); end-to-end output checked visually. **The first bar is a placeholder**: the untuned
-end-to-end baseline is being measured by Session C on seat-230. Regenerate with
-`python make_waterfall.py <baseline_fps>` in the pod once the number is in.
+CPU TAEHV (Session C); end-to-end output checked visually. The first bar, 5.62 FPS, is Session C's measured
+untuned end-to-end run on seat-230 (branch `tier2-g2`, commit `8b92545`): 1 core, 30 per-layer graphs, caches
+through the host; clip looped to 25 chunks, first 5 excluded. The 4-core pipeline is 6.8x that. With 3 chunks in
+flight instead of 6 it runs at 26.3 FPS with 458 ms mean / 505 ms p99 latency.
 
 ## 7. What is still projected or missing
 
