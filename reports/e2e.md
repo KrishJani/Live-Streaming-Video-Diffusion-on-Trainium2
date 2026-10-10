@@ -3,6 +3,8 @@
 **Result: MEASURED 5.64 FPS on one NeuronCore**, with the encoder, all 30 DiT layers and the decoder running as
 traced Neuron graphs for every stream chunk. One 4-frame chunk at 512 x 512 takes 0.709 s. The output is the same
 stylised video as Track 2's G2 run (which used the Wan VAE on CPU): 26.2 dB PSNR against it with identical noise.
+Measured the same way as Track 2's tuned run (clip looped to 25 chunks, first 5 excluded) the untuned baseline is
+**5.62 FPS**, p99 chunk time 0.729 s.
 
 Run on seat-230 (trn2.48xlarge, `NEURON_RT_VISIBLE_CORES=0`), 2026-10-10. Code: `tier2/e2e.py`. Raw numbers:
 `tier2/results/e2e.json`. Video: `tier2/out/e2e_trainium.mp4` (input | output). Still: `tier2/out/e2e_compare.png`.
@@ -35,6 +37,54 @@ Per stream chunk: 1 encoder call, 2 DiT passes (60 block calls), 1 decoder call,
 - Only 3 steady-state chunks were measured; the clip is short. Not measured: frame capture, video writing, a
   longer run (the `t_refresh` position rewind after about 45 chunks and adaptive sink refresh are still not
   implemented in the host code).
+
+## Untuned baseline measured Track 2's way (looped clip, first 5 chunks excluded)
+
+`python e2e.py --chunks 25`: the 29-frame clip is looped to 25 stream chunks and the first 5 are excluded, the same
+accounting as Track 2's tuned 38.4 FPS run (`tier2/g4_e2e.py` on `tier2-g1`). Nothing else changed: one graph per
+layer, KV caches through the host on every block call, TAEHV state through the host, one core, one chunk at a time.
+Raw numbers: `tier2/results/e2e_loop25.json`.
+
+| Steady state, chunks 5-24 (20 chunks) | |
+|---|---|
+| **FPS, MEASURED** | **5.62** |
+| Chunk time, mean | 0.7117 s |
+| Chunk time, p50 | 0.7107 s |
+| Chunk time, p99 | 0.7287 s |
+| Chunk time, min / max | 0.7041 s / 0.7303 s |
+| of which TAEHV encode | 18.6 ms |
+| of which DiT (60 block calls) | 0.635 s |
+| of which TAEHV decode | 38.0 ms |
+| of which host overhead | 19.7 ms |
+
+With 20 samples the p99 is an interpolation just below the maximum. The number agrees with the 3-chunk figure
+above (5.64), so the short clip was not flattering the baseline. On the same accounting the tuned 4-core pipeline
+is 38.4 / 5.62 = 6.8x this baseline.
+
+### Config differences against `g4_e2e.py`
+
+Same in both: TAEHV graphs (the identical `taehv_enc/dec_512x512_bf16.pt` shapes and code from `vae_neuron.py`),
+rescale `lat * std + mean`, TAEHV chunk f = pixel frames 4f..4f+3 with the decoder's first 3 frames dropped, clip
+looped by wrapping the frame index, 2 DiT passes per chunk at [adaptive first step, 500], fresh seeded noise
+(seed 1234), TAEHV state carried on the host side, first 5 chunks excluded.
+
+| | This baseline (`e2e.py --chunks 25`) | Track 2 tuned (`g4_e2e.py`) |
+|---|---|---|
+| Cores | 1 | 4 |
+| DiT graphs | 30, one per layer | 4 stages of 8, 8, 7, 7 layers |
+| KV caches | cross the host on every block call | resident on the device |
+| Concurrency | one chunk at a time, one process | 6 chunks in flight across 4 stage processes |
+| FPS definition | 4 x chunks / sum of per-chunk wall times | 4 x chunks / elapsed time between completions (throughput); the two agree for a sequential loop |
+| Tail metric | p99 of chunk time | mean / p50 / max of submit-to-done latency (no p99) |
+| Chunks | 25, skip 5 | 120, skip 5 |
+| Session start | in the run but before the timed chunks: 2-frame start on CPU (15.4 s) | not run: KV caches pre-warmed by `g3_pipeline.py warm`, encoder warmed on pixel chunks 0-2, decoder on 3 warm latents |
+| First step and noise scale | recomputed from the pixels every chunk (`noise_scale_and_step`), inside the timed chunk | replayed from the 5 values saved in the CPU reference, cycled; no per-chunk computation |
+| Row schedule | staggered as in the repo: row 1 denoises the previous frame, output one chunk later | both rows on the same frame back to back, no one-chunk delay; same number of passes |
+| uint8 conversion of output frames | inside the timed chunk | not timed (only the first 5 chunks' frames are kept) |
+| Looped RoPE frame index | 2 to 26 | 3 to 122 (neither does the `t_refresh` rewind) |
+
+The first-step computation and uint8 conversion are part of this baseline's 19.7 ms of host overhead, so they cost
+it at most 3% relative to Track 2's accounting. The rest of the gap is the tuning itself.
 
 Compared with the VAE on CPU (Track 2's figures: Wan encode 12.1 s, Wan decode 15.8 s per chunk), the same DiT
 went from about 0.14 FPS to 5.64 FPS end to end. The DiT is now 90% of the chunk.

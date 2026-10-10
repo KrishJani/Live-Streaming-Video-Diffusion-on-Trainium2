@@ -18,6 +18,7 @@ in Track 2's G2 run; the traced block graph is fixed at 1 frame. Every stream ch
 Noise: if artifacts/tier2/g2/ref.pt exists (CPU reference with the Wan VAE, same seed as Track 2's G2 run), its
 noise tensors are replayed so the output is comparable with that reference; otherwise torch.manual_seed(SEED).
 """
+import argparse
 import json
 import time
 
@@ -73,6 +74,12 @@ def read_panel(path, panel, n):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--chunks", type=int, default=NUM_STREAM_CHUNKS,
+                    help="stream chunks; above 6 the 29-frame clip is looped and only timing is reported")
+    ap.add_argument("--skip", type=int, default=5, help="looped mode: chunks excluded from the steady state")
+    args = ap.parse_args()
+    loop = args.chunks > NUM_STREAM_CHUNKS
     torch.set_grad_enabled(False)
     import torch_neuronx  # noqa: F401
     n_frames = 5 + 4 * NUM_STREAM_CHUNKS
@@ -80,7 +87,7 @@ def main():
     x01 = frames[0].permute(1, 0, 2, 3) * 0.5 + 0.5
     x32 = torch.cat([x01, x01[-1:].repeat(3, 1, 1, 1)])            # end padding: 3-frame encoder lookahead
     ref = torch.load(G2 / "ref.pt") if (G2 / "ref.pt").exists() else None
-    replay = ref is not None and "enc" in ref
+    replay = ref is not None and "enc" in ref and not loop
     print(f"noise: {'replayed from the CPU reference' if replay else f'seed {SEED}'}", flush=True)
     torch.manual_seed(SEED)
 
@@ -90,7 +97,8 @@ def main():
 
     def encode(k):
         """TAEHV latent k (frames 4k..4k+3) in the pipeline's un-normalised latent space: [1, 1, 16, 64, 64]."""
-        return (enc(x32[4 * k:4 * k + 4]) * WAN_STD + WAN_MEAN).unsqueeze(1)
+        px = x01[[(4 * k + j) % n_frames for j in range(4)]] if loop else x32[4 * k:4 * k + 4]  # loop: wrap the clip
+        return (enc(px) * WAN_STD + WAN_MEAN).unsqueeze(1)
 
     def decode(lat):
         """One finished latent [1, 1, 16, 64, 64] -> 4 uint8 frames."""
@@ -113,11 +121,11 @@ def main():
 
     # ---- stream chunks: everything on the NeuronCore ----
     hidden_prev, scale, last = None, NOISE_SCALE, frames[:, :, [4]]
-    for c in range(NUM_STREAM_CHUNKS):
+    for c in range(args.chunks):
         enc.seconds = dec.seconds = 0.0
         run.t = {"dit": 0.0, "host": 0.0}
         tc = time.perf_counter()
-        images = frames[:, :, 5 + 4 * c:9 + 4 * c]
+        images = frames[:, :, [(5 + 4 * c + j) % n_frames for j in range(4)]]
         scale, step = noise_scale_and_step(torch.cat([last, images], dim=2), scale, NOISE_SCALE)
         lat = encode(2 + c)
         enc_lats.append(lat)
@@ -138,6 +146,21 @@ def main():
         chunks.append(row)
         print({k: (round(v, 4) if isinstance(v, float) else v) for k, v in row.items()}, flush=True)
         last = images[:, :, [-1]]
+
+    if loop:  # same accounting as Track 2's g4_e2e.py: looped clip, first `skip` chunks excluded
+        st = chunks[args.skip:]
+        walls = sorted(r["wall_s"] for r in st)
+        res = {"measured": True, "core": "one NeuronCore (NEURON_RT_VISIBLE_CORES=0)", "chunks": args.chunks,
+               "skipped_for_steady_state": args.skip, "noise": f"seed {SEED}", "start": start,
+               "steady_state_fps": 4 * len(st) / sum(walls),
+               "chunk_s": {"mean": float(np.mean(walls)), "p50": float(np.median(walls)),
+                           "p99": float(np.percentile(walls, 99)), "max": walls[-1], "min": walls[0]},
+               "steady_state_mean_s": {k: float(np.mean([r[k] for r in st]))
+                                       for k in ("encode_s", "dit_s", "decode_s", "host_s")},
+               "chunk_rows": chunks}
+        (G2 / f"e2e_loop{args.chunks}.json").write_text(json.dumps(res, indent=2) + "\n")
+        print("E2E LOOP " + json.dumps({k: v for k, v in res.items() if k != "chunk_rows"}), flush=True)
+        return
 
     video = np.concatenate(out)                                    # 25 frames: 1 + 4 * 6
     n_out = video.shape[0]
