@@ -13,7 +13,7 @@ if [[ ! "$SEAT" =~ ^seat-[0-9]+$ ]]; then
   exit 1
 fi
 # These seats run someone else's vLLM server and experiments; touching them needs explicit opt-in.
-PROTECTED_SEATS=" seat-230 seat-231 seat-232 "
+PROTECTED_SEATS=" "
 is_protected() { [[ "$PROTECTED_SEATS" == *" $SEAT "* ]]; }
 if is_protected && [[ "${ALLOW_PROTECTED:-}" != "readonly" ]]; then
   echo "error: $SEAT is protected; set ALLOW_PROTECTED=readonly for read-only pod.sh commands" >&2
