@@ -29,6 +29,18 @@ TEST_IMAGES = {
 }
 
 STYLES = {
+    "anime": "anime style portrait, cel shading, clean line art, vibrant colors, soft lighting, "
+             "detailed expressive eyes, 2D animation film still",
+    "claymation": "claymation portrait, stop-motion clay figure, sculpted plasticine, soft rounded features, "
+                  "matte clay texture, handmade miniature set, warm studio lighting",
+    "oil_painting": "oil painting portrait, visible thick brush strokes, impasto texture on canvas, "
+                    "rich warm colors, soft dramatic lighting, classical fine art",
+    "pixel_art": "pixel art portrait, 16-bit retro game sprite, large blocky pixels, limited color palette, "
+                 "hard edges, dithered shading",
+}
+
+# First version of the prompts; the CPU reference (tier1/out/reference) was generated with these.
+STYLES_V1 = {
     "anime": "anime key visual, cel shaded, clean bold line art, vibrant flat colors, "
              "expressive eyes, studio anime film still, highly detailed",
     "claymation": "claymation stop-motion still, handmade plasticine clay figures, soft rounded shapes, "
@@ -43,6 +55,7 @@ ARTIFACTS = {
     "taesd_enc": f"taesd_enc_1x3x{SIZE}x{SIZE}_bf16.pt",
     "unet": f"sdturbo_unet_1x4x{LATENT}x{LATENT}_t1_ehs1x77x1024_bf16.pt",
     "taesd_dec": f"taesd_dec_1x4x{LATENT}x{LATENT}_bf16.pt",
+    "vae_enc": f"sdturbo_vae_enc_1x3x{SIZE}x{SIZE}_bf16.pt",
 }
 CONSTS_FILE = "sdturbo_consts_embeds_1x77x1024_fp32.pt"
 
@@ -60,8 +73,14 @@ def turbo_schedule(cfg, num_inference_steps=NUM_INFERENCE_STEPS, strength=STRENG
     if len(timesteps) != 1:
         raise ValueError(f"expected exactly one denoising step, got timesteps {timesteps}")
     t = int(timesteps[0])
-    sigma = float(((1 - alphas_cumprod[t]) / alphas_cumprod[t]) ** 0.5)
-    return t, sigma
+    sigmas = ((1 - alphas_cumprod) / alphas_cumprod) ** 0.5
+    return t, float(sigmas[t]), sigmas
+
+
+def strength_to_timestep(strength, num_train_timesteps=1000):
+    """Timestep of a single trailing-spaced step at this img2img strength (0.5 -> 499, as diffusers
+    uses for strength 0.5 with 2 inference steps)."""
+    return min(max(int(round(num_train_timesteps * strength)) - 1, 0), num_train_timesteps - 1)
 
 
 def frame_to_tensor(frame_u8):

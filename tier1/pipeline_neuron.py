@@ -17,8 +17,8 @@ import torch
 import torch.nn as nn
 
 from common import (ART_DIR, ARTIFACTS, CONSTS_FILE, INPUT_DIR, LATENT, MODEL_ID, OUT_DIR, REF_DIR,
-                    REPORT_DIR, SEED, SIZE, STYLES, TAESD_ID, cosine, frame_to_tensor, psnr_u8,
-                    tensor_to_frame, turbo_schedule, write_json)
+                    REPORT_DIR, SEED, SIZE, STRENGTH, STYLES, STYLES_V1, TAESD_ID, cosine, frame_to_tensor, psnr_u8,
+                    strength_to_timestep, tensor_to_frame, turbo_schedule, write_json)
 
 BF16 = torch.bfloat16
 
@@ -43,6 +43,19 @@ class DecoderWrap(nn.Module):
         return self.taesd.decode(latents.to(BF16), return_dict=False)[0].float()
 
 
+class VaeEncoderWrap(nn.Module):
+    """Full SD VAE encoder; returns the posterior mean already multiplied by the scaling factor."""
+
+    def __init__(self, vae):
+        super().__init__()
+        self.vae = vae
+        self.scale = vae.config.scaling_factor
+
+    def forward(self, image):
+        mean = self.vae.encode(image.to(BF16), return_dict=False)[0].mode()
+        return (mean * self.scale).float()
+
+
 class UNetWrap(nn.Module):
     def __init__(self, unet):
         super().__init__()
@@ -63,6 +76,13 @@ def build_component(component):
         wrap = UNetWrap
         ref_forward = lambda s, t, e: fp32(s, t, e, return_dict=False)[0]
         example = (torch.randn(1, 4, LATENT, LATENT), torch.tensor([499.0]), torch.randn(1, 77, 1024))
+    elif component == "vae_enc":
+        from diffusers import AutoencoderKL
+        fp32 = AutoencoderKL.from_pretrained(
+            MODEL_ID, subfolder="vae", variant="fp16", torch_dtype=torch.float32).eval()
+        wrap = VaeEncoderWrap
+        ref_forward = lambda x: fp32.encode(x, return_dict=False)[0].mode() * fp32.config.scaling_factor
+        example = (torch.rand(1, 3, SIZE, SIZE) * 2 - 1,)
     else:
         from diffusers import AutoencoderTiny
         fp32 = AutoencoderTiny.from_pretrained(TAESD_ID, torch_dtype=torch.float32).eval()
@@ -146,60 +166,83 @@ def prepare():
     from transformers import CLIPTextModel, CLIPTokenizer
 
     cfg = json.load(open(hf_hub_download(MODEL_ID, "scheduler/scheduler_config.json")))
-    timestep, sigma = turbo_schedule(cfg)
+    timestep, sigma, sigmas = turbo_schedule(cfg)
     tokenizer = CLIPTokenizer.from_pretrained(MODEL_ID, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(
         MODEL_ID, subfolder="text_encoder", variant="fp16", torch_dtype=torch.float32).eval()
 
-    embeds = {}
-    for style, prompt in STYLES.items():
-        ids = tokenizer(prompt, padding="max_length", max_length=tokenizer.model_max_length,
-                        truncation=True, return_tensors="pt").input_ids
-        with torch.no_grad():
-            embeds[style] = text_encoder(ids)[0].float().contiguous()
-        print(f"{style}: {tuple(embeds[style].shape)}")
+    def embed(prompts):
+        out = {}
+        for style, prompt in prompts.items():
+            ids = tokenizer(prompt, padding="max_length", max_length=tokenizer.model_max_length,
+                            truncation=True, return_tensors="pt").input_ids
+            with torch.no_grad():
+                out[style] = text_encoder(ids)[0].float().contiguous()
+            print(f"{style}: {tuple(out[style].shape)}")
+        return out
 
     torch.manual_seed(SEED)
     ART_DIR.mkdir(parents=True, exist_ok=True)
-    torch.save({"timestep": timestep, "sigma": sigma, "prediction_type": cfg["prediction_type"],
-                "prompts": dict(STYLES), "embeds": embeds,
+    torch.save({"timestep": timestep, "sigma": sigma, "sigmas": sigmas, "prediction_type": cfg["prediction_type"],
+                "prompts": dict(STYLES), "embeds": embed(STYLES),
+                "prompts_v1": dict(STYLES_V1), "embeds_v1": embed(STYLES_V1),
                 "noise": torch.randn(1, 4, LATENT, LATENT)}, ART_DIR / CONSTS_FILE)
     print(f"timestep={timestep} sigma={sigma:.6f} prediction_type={cfg['prediction_type']}")
     print(f"wrote {ART_DIR / CONSTS_FILE}")
 
 
 class NeuronTurbo:
-    """Runtime pipeline. Set NEURON_RT_VISIBLE_CORES before constructing to pin it to a core."""
+    """Runtime pipeline. Set NEURON_RT_VISIBLE_CORES before constructing to pin it to a core.
 
-    def __init__(self, art_dir=ART_DIR, style="anime"):
+    One seeded noise tensor is reused for every frame of a stream (fresh noise per frame flickers).
+    strength picks the single timestep; smooth blends each predicted x0 with the previous output
+    latent; encoder is "taesd" or "vae" (the full SD VAE encoder).
+    """
+
+    def __init__(self, art_dir=ART_DIR, style="anime", strength=STRENGTH, smooth=0.0, encoder="taesd",
+                 prompts="current"):
         import torch_neuronx  # noqa: F401  (registers the Neuron ops needed by torch.jit.load)
 
         consts = torch.load(art_dir / CONSTS_FILE)
         if consts["prediction_type"] != "epsilon":
             raise ValueError(f"unsupported prediction_type {consts['prediction_type']}")
-        self.sigma = consts["sigma"]
-        self.timestep = torch.tensor([float(consts["timestep"])])
-        self.input_scale = 1.0 / (self.sigma ** 2 + 1) ** 0.5
-        self.embeds = consts["embeds"]
+        self.sigmas = consts["sigmas"]
+        self.embeds = consts["embeds" if prompts == "current" else "embeds_v1"]
         self.noise = consts["noise"]
-        self.enc = torch.jit.load(str(art_dir / ARTIFACTS["taesd_enc"]))
+        self.encoder = encoder
+        self.enc = torch.jit.load(str(art_dir / ARTIFACTS["taesd_enc" if encoder == "taesd" else "vae_enc"]))
         self.unet = torch.jit.load(str(art_dir / ARTIFACTS["unet"]))
         self.dec = torch.jit.load(str(art_dir / ARTIFACTS["taesd_dec"]))
+        self.smooth = smooth
+        self.prev_x0 = None
+        self.set_strength(strength)
         self.set_style(style)
 
     def set_style(self, style):
         self.style = style
         self.ehs = self.embeds[style]
 
+    def set_strength(self, strength):
+        self.strength = strength
+        t = strength_to_timestep(strength, len(self.sigmas))
+        self.sigma = float(self.sigmas[t])
+        self.timestep = torch.tensor([float(t)])
+        self.input_scale = 1.0 / (self.sigma ** 2 + 1) ** 0.5
+
     def encode(self, image):
-        # TAESD latents are already in the UNet's (scaled) latent space: its scaling_factor is 1.0.
+        # Both encoders return latents in the UNet's (scaled) latent space: TAESD natively (its
+        # scaling_factor is 1.0), the VAE graph multiplies by 0.18215 internally.
         return self.enc(image)
 
-    def denoise(self, latents, noise=None, return_eps=False):
+    def denoise(self, latents, noise=None, return_eps=False, prev_x0=None):
         """Euler img2img with a single step ending at sigma=0, epsilon prediction."""
         noisy = latents + (self.noise if noise is None else noise) * self.sigma
         eps = self.unet(noisy * self.input_scale, self.timestep, self.ehs)
         x0 = noisy - self.sigma * eps
+        prev = self.prev_x0 if prev_x0 is None else prev_x0
+        if self.smooth > 0 and prev is not None:
+            x0 = torch.lerp(x0, prev, self.smooth)
+        self.prev_x0 = x0
         return (x0, eps) if return_eps else x0
 
     def decode(self, latents):
@@ -209,6 +252,7 @@ class NeuronTurbo:
         frame = np.zeros((SIZE, SIZE, 3), dtype=np.uint8)
         for _ in range(n):
             self(frame)
+        self.prev_x0 = None
 
     @torch.no_grad()
     def __call__(self, frame_u8, timings=None):
@@ -236,7 +280,7 @@ def check():
     from PIL import Image, ImageDraw
 
     os.environ.setdefault("NEURON_RT_VISIBLE_CORES", "0")
-    pipe = NeuronTurbo()
+    pipe = NeuronTurbo(prompts="v1")  # the reference was generated with the v1 prompts
     check_dir = OUT_DIR / "check"
     check_dir.mkdir(parents=True, exist_ok=True)
     ref_summary = json.load(open(REF_DIR / "reference.json"))

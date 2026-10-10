@@ -19,7 +19,7 @@ from proto import pack, read_msg
 
 SIZE = 512
 STYLES = ["anime", "claymation", "oil_painting", "pixel_art"]
-MAX_IN_FLIGHT = 6
+MAX_IN_FLIGHT = 16
 IN_FLIGHT_TIMEOUT_S = 3.0
 FPS_WINDOW_S = 2.0
 RELAY_CMD = ["kubectl", "exec", "-i", "seat-233", "-c", "app", "--",

@@ -13,14 +13,14 @@ from diffusers import AutoPipelineForImage2Image
 from huggingface_hub import hf_hub_download
 from PIL import Image
 
-from common import (INPUT_DIR, MODEL_ID, NUM_INFERENCE_STEPS, REF_DIR, SEED, STRENGTH, STYLES,
+from common import (INPUT_DIR, MODEL_ID, NUM_INFERENCE_STEPS, REF_DIR, SEED, STRENGTH, STYLES_V1 as STYLES,
                     turbo_schedule, write_json)
 
 
 def main():
     REF_DIR.mkdir(parents=True, exist_ok=True)
     cfg = json.load(open(hf_hub_download(MODEL_ID, "scheduler/scheduler_config.json")))
-    t_expected, sigma_expected = turbo_schedule(cfg)
+    t_expected, sigma_expected, _ = turbo_schedule(cfg)
 
     pipe = AutoPipelineForImage2Image.from_pretrained(MODEL_ID, variant="fp16", torch_dtype=torch.float32)
     pipe.set_progress_bar_config(disable=True)
