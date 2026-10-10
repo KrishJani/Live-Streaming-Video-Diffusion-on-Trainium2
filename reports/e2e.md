@@ -79,11 +79,26 @@ PSNR of the all-Trainium output, per chunk of output frames:
   small differences in fine detail such as the eyes. With different noise the style holds but the content differs
   much more (18.1 dB), which is sampling variation, not an error.
 
+## Resident TAEHV state (step 5)
+
+`tier2/vae_resident.py`, raw numbers in `tier2/results/vae_resident.json`. The 9 memories are parameters of the
+traced module, aliased to its outputs with `input_output_aliases` and moved to the device with
+`move_trace_to_device` (the mechanism Track 2 used for the KV cache). Only the frames or the latent cross the host.
+
+| Per chunk, one core, 100 calls | State through the host (mean / p50 / p99) | State resident (mean / p50 / p99) | Parity vs CPU TAEHV, min cos over 8 chunks |
+|---|---|---|---|
+| TAEHV encode | 17.91 / 17.92 / 17.95 ms | 13.24 / 13.30 / 13.32 ms | 0.999953 |
+| TAEHV decode | 37.82 / 37.80 / 38.19 ms | 31.22 / 31.22 / 31.29 ms | 0.999996 |
+
+- Parity is the same as with host-side state on every chunk, so the on-device state does advance correctly.
+- This saves 11.3 ms per chunk. It was measured standalone and is **not wired into the end-to-end run above**: the
+  5.64 FPS figure uses host-side state. By arithmetic it would give 0.698 s per chunk, about 5.73 FPS (estimate,
+  not measured).
+- Compile: 28 s encoder, 43 s decoder. These traced modules were used in-process and not saved as artifacts.
+
 ## Not done
 
-- **Resident TAEHV state** (step 5, `input_output_aliases`): not attempted. Encode plus decode is 57 ms of the
-  709 ms chunk, so the most it could save is a few percent; the same trick on the DiT's KV caches is where the
-  time is.
+- Wiring the resident TAEHV graphs into `e2e.py` and re-measuring end to end.
 - Session start on Neuron (needs a 2-frame block graph).
 - seat-231 was not used; seat-232 and seat-234 were not touched.
 
