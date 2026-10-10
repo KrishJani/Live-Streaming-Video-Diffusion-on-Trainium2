@@ -288,6 +288,21 @@ def extract_weights(layer: int = 0, force: bool = False):
     return data
 
 
+def extract_all_layers(num_layers: int = 30):
+    """One pass over model.pt that writes block<i>_fp32.pt for every layer still missing."""
+    todo = [i for i in range(num_layers) if not (ART_DIR / f"block{i}_fp32.pt").exists()]
+    if not todo:
+        return
+    sd = torch.load(glob.glob(CKPT_GLOB)[0], map_location="cpu", weights_only=False)["generator"]
+    ART_DIR.mkdir(parents=True, exist_ok=True)
+    for i in todo:
+        prefix = f"model.blocks.{i}."
+        block = {k[len(prefix):]: v.float().clone() for k, v in sd.items() if k.startswith(prefix)}
+        tmp = ART_DIR / f"block{i}_fp32.tmp"
+        torch.save({"layer": i, "block": block, "embed": {}}, tmp)
+        os.replace(tmp, ART_DIR / f"block{i}_fp32.pt")
+
+
 def load_port(cfg: BlockCfg = BlockCfg(), layer: int = 0, manual_attn: bool = False):
     data = extract_weights(layer)
     model = CausalBlockPort(cfg, manual_attn=manual_attn)
