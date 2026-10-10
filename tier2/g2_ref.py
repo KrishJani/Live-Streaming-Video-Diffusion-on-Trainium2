@@ -94,6 +94,7 @@ def run():
         lat = vae.stream_encode(images, is_scale=False).transpose(2, 1).contiguous()  # inference.py:173-177
         enc_s = time.time() - t
         noise = torch.randn_like(lat)
+        rec.setdefault("enc", []).append({"lat": lat.clone(), "noise": noise.clone(), "scale": scale})  # for e2e.py
         return noise * scale + lat * (1 - scale), enc_s
 
     # ---- session start: 5 frames = 2 latent frames, sequential over the steps (inference.py:188-215) ----
