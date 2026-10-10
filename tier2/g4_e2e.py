@@ -79,17 +79,26 @@ def main():
     ap.add_argument("--chunks", type=int, default=120)
     ap.add_argument("--inflight", type=int, default=6, help="chunks in flight")
     ap.add_argument("--name", default="e2e_4core")
+    ap.add_argument("--clip", default=None, help="512x512 clip to stylise once, no looping (warm with g5_clip.py first)")
+    ap.add_argument("--out", default=None, help="output video for --clip (stylised frames only)")
     args = ap.parse_args()
     from g2_neuron import Host
     torch.set_grad_enabled(False)
     torch.set_num_threads(4)
     torch.manual_seed(1234)
     cfg = BlockCfg()
-    ref = torch.load(G2 / "ref.pt")
-    calls = ref["calls"]
     host = Host(cfg, torch.load(G2 / "prompt_anime.pt")["prompt_embeds"])
     warm = torch.load(SHM / "warm.pt")
-    x01 = ref["frames"][0].permute(1, 0, 2, 3) * 0.5 + 0.5  # [29, 3, H, W] in [0, 1]
+    fps_out, scale_state = 15, [warm.get("noise_scale", 0.8)]
+    if args.clip:
+        from g5_clip import load_frames, step_for
+        assert warm.get("clip") == args.clip, f"caches in {SHM} were warmed for {warm.get('clip')}"
+        x01, fps_out = load_frames(args.clip)
+        args.chunks, calls = x01.shape[0] // 4 - 3, None
+    else:
+        ref = torch.load(G2 / "ref.pt")
+        calls = ref["calls"]
+        x01 = ref["frames"][0].permute(1, 0, 2, 3) * 0.5 + 0.5  # [29, 3, H, W] in [0, 1]
     n_pix = x01.shape[0]
 
     def pix_chunk(f):  # TAEHV chunk f = pixel frames 4f..4f+3; the clip is looped
@@ -151,11 +160,15 @@ def main():
         j, kind = job["tag"], job["kind"]
         for stage, k, dt in job["times"]:
             per_kind.setdefault(f"stage{stage}_{k}", []).append(dt)
-        c = calls[1 + (j % (len(calls) - 1))]
         if kind == "enc":
             lat = (job["x"].float() * STD + MEAN).unsqueeze(0)  # raw-latent convention of the pipeline's encode
-            ns = c["noise_scale"]
-            submit_dit(0, j, torch.randn_like(lat) * ns + lat * (1 - ns), c["current_step"])
+            if args.clip:  # adaptive noise scale from the real frames (streamv2v/inference.py:51-57)
+                ns, step = step_for(x01, 3 + j, scale_state[0])
+                scale_state[0] = ns
+            else:
+                c = calls[1 + (j % (len(calls) - 1))]
+                ns, step = c["noise_scale"], c["current_step"]
+            submit_dit(0, j, torch.randn_like(lat) * ns + lat * (1 - ns), step)
         elif kind == "dit":
             m = meta.pop((job["row"], j))
             x0 = host.to_x0(host.head(job["x"].float(), m["e"], 1), m["lat"], m["step"])
@@ -165,7 +178,7 @@ def main():
                 vae_job("dec", x0[0].to(BF16), j)
         else:
             t_done[j] = time.perf_counter()
-            if j < 5:
+            if j < 5 or args.clip:
                 out_frames.append(job["x"].float())
             active, done = active - 1, done + 1
     t_end_wall = time.time()
@@ -188,6 +201,13 @@ def main():
     (ART_DIR / f"g4_{args.name}.json").write_text(json.dumps(res, indent=2) + "\n")
     print("E2E " + json.dumps(res), flush=True)
 
+    if args.clip:
+        out = to_u8(torch.cat(out_frames).mul(2).sub(1))
+        write_mp4(args.out, out, fps=round(fps_out))
+        print(f"CLIP OK {len(out)} frames -> {args.out}", flush=True)
+        for p in procs:
+            p.join(timeout=20)
+        return
     if args.name != "e2e_4core":  # only the default run writes the video
         for p in procs:
             p.join(timeout=20)
