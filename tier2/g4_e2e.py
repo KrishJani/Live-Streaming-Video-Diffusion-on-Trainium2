@@ -181,13 +181,17 @@ def main():
            "steady_state_fps": round(4 * (n - skip) / steady_s, 2),
            "steady_state_s_per_chunk": round(steady_s / (n - skip), 4),
            "chunk_latency_ms": {"mean": round(float(np.mean(lat_ms)), 1), "p50": round(float(np.median(lat_ms)), 1),
-                                "max": round(max(lat_ms), 1)},
+                                "p99": round(float(np.percentile(lat_ms, 99)), 1), "max": round(max(lat_ms), 1)},
            "call_ms_mean": {k: round(1e3 * float(np.mean(v)), 2) for k, v in sorted(per_kind.items())},
            "vae_placement": {"enc": "stage 2 / core 2", "dec": "stage 3 / core 3"},
            "monitor": monitor_parse(mon_path, t_start_wall, t_end_wall)}
     (ART_DIR / f"g4_{args.name}.json").write_text(json.dumps(res, indent=2) + "\n")
     print("E2E " + json.dumps(res), flush=True)
 
+    if args.name != "e2e_4core":  # only the default run writes the video
+        for p in procs:
+            p.join(timeout=20)
+        return
     out = to_u8(torch.cat(out_frames).mul(2).sub(1))  # decoder output is [0, 1]
     inp = to_u8(ref["frames"][0].permute(1, 0, 2, 3)[:len(out)])
     write_mp4(OUT / "e2e_4core.mp4", np.concatenate([inp, out], axis=2))

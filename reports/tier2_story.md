@@ -171,13 +171,33 @@ least-loaded cores: encoder with stage 2 (core 2), decoder with stage 3 (core 3)
 - Not timed in this figure: reading/decoding the source video and colour conversion to uint8 for display. Warm-up
   (first 3 latent frames) is done before the timed loop: KV caches as in section 6, encoder state from pixel
   chunks 0 to 2, decoder state from the 3 warm-up latents.
-- Latency is high because 6 chunks are kept in flight to maximise throughput; section 6 shows the trade-off
-  (3 in flight roughly halves latency for about 15% less throughput). Not re-measured with the VAE.
+- Latency is high because 6 chunks are kept in flight to maximise throughput; the table below has the
+  3-in-flight run.
 
-![FPS step by step](../tier2/out/fps_waterfall.png)
+### Throughput vs latency, end to end (measured)
 
-The first two bars are derived from measured block latency (latency x 30 layers x 2 passes); the last three are
-measured on the full model, and only the last one includes the VAE.
+| Chunks in flight | End-to-end FPS | Chunk latency mean | p99 | max |
+|---|---|---|---|---|
+| 6 | 38.4 | 629 ms | not recorded | 924 ms |
+| 3 | **26.3** | **458 ms** | **505 ms** | 505 ms |
+
+One chunk's own work is about 350 ms (encode 19 ms + 8 DiT stage calls about 285 ms + decode 39 ms + host), so
+latency cannot go much below that with this layout; more chunks in flight buys throughput at the cost of queueing.
+
+## Charts
+
+![DiT only](../tier2/out/fps_waterfall_dit.png)
+
+Same model, 512x512, 2 steps, steady state, cosine >= 0.999 vs CPU reference at every bar. The first bar is the
+measured untuned full model from G2 (0.65 s per chunk). Estimated from block latency and not on the chart: 5.8 FPS
+(one block, caches via host) and 8.6 FPS (resident cache, 1 layer per graph).
+
+![End to end including the VAE](../tier2/out/fps_waterfall_e2e.png)
+
+Same model, 512x512, 2 steps, steady state. Parity: DiT cosine >= 0.999 vs CPU reference; TAEHV cosine >= 0.999 vs
+CPU TAEHV (Session C); end-to-end output checked visually. **The first bar is a placeholder**: the untuned
+end-to-end baseline is being measured by Session C on seat-230. Regenerate with
+`python make_waterfall.py <baseline_fps>` in the pod once the number is in.
 
 ## 7. What is still projected or missing
 
