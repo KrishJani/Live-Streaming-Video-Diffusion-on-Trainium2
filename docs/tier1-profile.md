@@ -1,6 +1,6 @@
 # Tier 1 quick profile
 
-sd-turbo img2img, 512x512, 1 step, TAESD encode/decode, bf16. Frames from `webcam_clip.mp4`.
+sd-turbo img2img, 512x512, 1 step, TAESD encode/decode, bf16. Frames from a recorded webcam clip.
 
 ## Per-core utilization during the 4-core run
 

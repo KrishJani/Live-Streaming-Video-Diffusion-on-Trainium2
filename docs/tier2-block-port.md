@@ -4,12 +4,12 @@
 `tier2/block_port.py`, traced with `torch_neuronx.trace` in bf16 at the exact demo shapes, matches CPU fp32 with
 cosine >= 0.99999 on `y` and both caches for 3 consecutive chunks (gate 0.999).
 
-Run on seat-234 (trn2.48xlarge, NeuronCore 0), 2026-10-10. torch 2.9.1, torch-neuronx 2.9.0.2.15.32035,
-neuronx-cc 2.27.5334.0. Raw JSON for every number below is in `tier2/results/`.
+Run on a trn2.48xlarge (NeuronCore 0), 2026-10-10. torch 2.9.1, torch-neuronx 2.9.0.2.15.32035,
+neuronx-cc 2.27.5334.0. Each script writes its raw numbers as JSON under `tier2/results/` (not committed).
 
 ## Config traced
 
-Demo v2v config (`configs/wan_causal_dmd_v2v.yaml`, 512 x 512, `--step 2`). Details in `tier2/SHAPES.md`.
+Demo v2v config (`configs/wan_causal_dmd_v2v.yaml`, 512 x 512, `--step 2`). Details in `docs/tier2-shapes.md`.
 
 | Input | Shape (bf16) |
 |---|---|
@@ -119,10 +119,8 @@ denoising step at batch 1.
 
 ## Errors
 
-None from the compiler or runtime. Two environment issues along the way:
-
-- The copy of `scripts/setup_venv.sh` already on seat-234 was stale (no `islpy==2026.1` pin), so the local
-  `scripts/` directory was re-synced to seat-234 before running it. No file under `scripts/` was edited.
+None from the compiler or runtime. One environment note: `scripts/setup_venv.sh` must include the
+`islpy==2026.1` pin, so sync the current `scripts/` directory to the pod before building the venv.
 
 ## Open items for the next tier
 

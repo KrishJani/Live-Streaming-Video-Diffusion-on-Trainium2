@@ -1,7 +1,7 @@
 """Neuron-friendly rewrite of ONE causal Wan2.1-1.3B block from StreamDiffusionV2.
 
 Original: repos/StreamDiffusionV2/models/wan/causal_model.py, CausalWanAttentionBlock (+ CausalWanSelfAttention,
-WanT2VCrossAttention). See tier2/SHAPES.md for the op-by-op list of what was replaced.
+WanT2VCrossAttention). See docs/tier2-shapes.md for the op-by-op list of what was replaced.
 
 Graph contract (all tensors, all shapes fixed at trace time):
 

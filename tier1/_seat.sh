@@ -1,4 +1,4 @@
-# Sourced by the tier1 helpers. Track 1 is pinned to seat-233 and never touches another seat.
+# Sourced by the tier1 helpers. The tier 1 demo is pinned to seat-233 and never touches another seat.
 TIER1_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TIER1_DIR/.." && pwd)"
 SEAT="${SEAT:-seat-233}"

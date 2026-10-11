@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside the seat-234 pod from tier2/. Waits for the CPU reference, then: Neuron run, decode + video,
+# Runs inside the pod from tier2/. Waits for the CPU reference, then: Neuron run, decode + video,
 # and the same host code with the fp32 CPU port (to separate host-logic error from bf16/Neuron error).
 set -uo pipefail
 export NEURON_RT_VISIBLE_CORES=0

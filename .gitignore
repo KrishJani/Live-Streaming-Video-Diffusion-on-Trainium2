@@ -1,17 +1,31 @@
+# Model weights and compiled Neuron artifacts
 models/
-logs/
-repos/
+artifacts/
 *.neff
-.env
-.DS_Store
-*.mp4
-*.mov
-*.pt
 *.ntff
+*.pt
+*.pth
 *.safetensors
 *.bin
-artifacts/
+
+# Generated outputs: videos, stills, raw results, machine reports
+*.mp4
+*.mov
+*.webm
+*.avi
+*.gif
+demo/
+reports/
 tier1/out/
 tier2/out/
+tier2/data/
+tier2/results/
+
+# Local environment
+.env
 venvs/
+logs/
+repos/
 __pycache__/
+*.pyc
+.DS_Store

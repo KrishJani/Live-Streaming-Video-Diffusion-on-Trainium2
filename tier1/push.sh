@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: tier1/push.sh   Syncs only the local tier1/ directory into /workspace/livevid/tier1
-# in the seat-233 pod. Outputs produced on the pod (tier1/out) are left alone.
+# in the pod. Outputs produced on the pod (tier1/out) are left alone.
 set -euo pipefail
 source "$(dirname "$0")/_seat.sh"
 

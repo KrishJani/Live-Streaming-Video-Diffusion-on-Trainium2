@@ -2,10 +2,10 @@
 
     python e2e.py            run tier2/data/test_clip.mp4, write tier2/out/e2e_trainium.mp4, e2e_compare.png, e2e.json
 
-Reuses Track 2's G2 host code unchanged (g2_neuron.Runner: schedule, per-row KV caches, sink handling, cached T5
+Reuses the G2 host code unchanged (g2_neuron.Runner: schedule, per-row KV caches, sink handling, cached T5
 embedding) and the TAEHV graphs from vae_neuron.py.
 
-Encode side, the two fixes from reports/vae_neuron.md:
+Encode side, the two fixes from docs/tier2-vae.md:
   * lookahead: TAEHV latent k is pixel frames 4k..4k+3 (Wan latent k is frames 4k-3..4k), so the clip is padded
     with 3 copies of its last frame at the END and every encoder call is one plain 4-frame chunk;
   * scale: TAEHV latents are mean/std normalised, the pipeline encodes with is_scale=False
@@ -13,9 +13,9 @@ Encode side, the two fixes from reports/vae_neuron.md:
 Decode side: the DiT's x0 is already in the normalised space TAEHV decodes; the first 3 decoded frames are dropped.
 
 One-off: the session start (2 latent frames in one 2048-token chunk) runs the DiT on CPU with the fp32 port, as
-in Track 2's G2 run; the traced block graph is fixed at 1 frame. Every stream chunk is Neuron only.
+in the G2 run; the traced block graph is fixed at 1 frame. Every stream chunk is Neuron only.
 
-Noise: if artifacts/tier2/g2/ref.pt exists (CPU reference with the Wan VAE, same seed as Track 2's G2 run), its
+Noise: if artifacts/tier2/g2/ref.pt exists (CPU reference with the Wan VAE, same seed as the G2 run), its
 noise tensors are replayed so the output is comparable with that reference; otherwise torch.manual_seed(SEED).
 """
 import argparse
@@ -147,7 +147,7 @@ def main():
         print({k: (round(v, 4) if isinstance(v, float) else v) for k, v in row.items()}, flush=True)
         last = images[:, :, [-1]]
 
-    if loop:  # same accounting as Track 2's g4_e2e.py: looped clip, first `skip` chunks excluded
+    if loop:  # same accounting as g4_e2e.py: looped clip, first `skip` chunks excluded
         st = chunks[args.skip:]
         walls = sorted(r["wall_s"] for r in st)
         res = {"measured": True, "core": "one NeuronCore (NEURON_RT_VISIBLE_CORES=0)", "chunks": args.chunks,
@@ -184,7 +184,7 @@ def main():
     bounds = [(0, 5)] + [(5 + 4 * i, 9 + 4 * i) for i in range((n_out - 5) // 4)]
     comps = {}
     t2_video = TIER2 / "out" / "g2_side_by_side.mp4"
-    if t2_video.exists():   # Track 2's committed G2 video: input | CPU reference | Neuron DiT, all decoded by the Wan VAE
+    if t2_video.exists():   # G2 video, if present: input | CPU reference | Neuron DiT, all decoded by the Wan VAE
         comps["track2_g2_neuron_dit_wan_vae_mp4"] = read_panel(t2_video, 2, n_out)
         comps["track2_g2_cpu_ref_wan_vae_mp4"] = read_panel(t2_video, 1, n_out)
     if ref is not None:     # this seat's CPU reference latents (Wan VAE encode, CPU DiT) through the Neuron TAEHV decoder
@@ -204,7 +204,7 @@ def main():
     write_mp4(OUT / "e2e_trainium.mp4", side)
     rows = [("input", inp), ("all stages on Trainium2", video)]
     if "track2_g2_neuron_dit_wan_vae_mp4" in res["quality_psnr_db"]:
-        rows.insert(1, ("Track 2 G2 (Wan VAE on CPU)", comps["track2_g2_neuron_dit_wan_vae_mp4"]))
+        rows.insert(1, ("G2 (Wan VAE on CPU)", comps["track2_g2_neuron_dit_wan_vae_mp4"]))
     idx = [0, 8, 16, n_out - 1]
     sheet = np.concatenate([np.concatenate([label(v[idx], name)[i] for i in range(len(idx))], axis=1)
                             for name, v in rows], axis=0)

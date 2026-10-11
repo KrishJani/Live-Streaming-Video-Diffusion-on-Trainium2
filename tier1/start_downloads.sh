@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside the seat-233 pod. Starts detached HF downloads of only the sd-turbo files the
+# Runs inside the pod. Starts detached HF downloads of only the sd-turbo files the
 # tier1 pipeline needs (fp16 safetensors, no full-precision duplicates) plus TAESD.
 # vae/ is included because the CPU diffusers reference decodes with the full VAE.
 set -euo pipefail

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: tier1/remote.sh "<cmd>"   Runs <cmd> in the seat-233 pod from /workspace/livevid
+# Usage: tier1/remote.sh "<cmd>"   Runs <cmd> in the pod from /workspace/livevid
 # with the tnx venv environment loaded, and returns its exit code.
 set -euo pipefail
 source "$(dirname "$0")/_seat.sh"

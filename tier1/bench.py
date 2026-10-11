@@ -5,7 +5,7 @@
      queues, outputs reordered by the dispatcher; aggregate FPS and p50/p99 frame latency
   3. similarity filter: skip rate on the test clip, and its effect on delivered FPS
 
-Results go to reports/tier1_bench.json and reports/tier1_bench.md.
+Results go to reports/tier1_bench.json and docs/tier1-benchmark.md.
 """
 import argparse
 import json

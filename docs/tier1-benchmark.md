@@ -1,6 +1,6 @@
 # Tier 1 benchmark: sd-turbo img2img on Neuron
 
-stabilityai/sd-turbo, 512x512, 1 UNet step, TAESD encode/decode, bf16, batch 1. seat-233, 200 frames from `test_clip.mp4`.
+stabilityai/sd-turbo, 512x512, 1 UNet step, TAESD encode/decode, bf16, batch 1. One trn2.48xlarge, 200 frames from `test_clip.mp4`.
 
 ## Compile
 

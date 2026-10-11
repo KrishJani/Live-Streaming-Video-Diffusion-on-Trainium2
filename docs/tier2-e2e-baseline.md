@@ -2,15 +2,15 @@
 
 **Result: MEASURED 5.64 FPS on one NeuronCore**, with the encoder, all 30 DiT layers and the decoder running as
 traced Neuron graphs for every stream chunk. One 4-frame chunk at 512 x 512 takes 0.709 s. The output is the same
-stylised video as Track 2's G2 run (which used the Wan VAE on CPU): 26.2 dB PSNR against it with identical noise.
-Measured the same way as Track 2's tuned run (clip looped to 25 chunks, first 5 excluded) the untuned baseline is
+stylised video as the G2 run (which used the Wan VAE on CPU): 26.2 dB PSNR against it with identical noise.
+Measured the same way as the tuned run (clip looped to 25 chunks, first 5 excluded) the untuned baseline is
 **5.62 FPS**, p99 chunk time 0.729 s.
 
-Run on seat-230 (trn2.48xlarge, `NEURON_RT_VISIBLE_CORES=0`), 2026-10-10. Code: `tier2/e2e.py`. Raw numbers:
-`tier2/results/e2e.json`. Video: `tier2/out/e2e_trainium.mp4` (input | output). Still: `tier2/out/e2e_compare.png`.
+Run on a trn2.48xlarge (`NEURON_RT_VISIBLE_CORES=0`), 2026-10-10. Code: `tier2/e2e.py`, which
+writes its raw numbers to `tier2/results/` and an input | output video and still to `tier2/out/` (not committed).
 
 One stage is not on Trainium: the **session start** (the first 2 latent frames, a one-off 2048-token chunk) runs
-the DiT on CPU with the fp32 port, exactly as in Track 2's G2 run, because the traced block graph is fixed at one
+the DiT on CPU with the fp32 port, exactly as in the G2 run, because the traced block graph is fixed at one
 frame. It took 15.6 s once. Its encode and decode are on Neuron. All 6 stream chunks are Neuron only.
 
 ## Measured timing per chunk (one core)
@@ -38,12 +38,11 @@ Per stream chunk: 1 encoder call, 2 DiT passes (60 block calls), 1 decoder call,
   longer run (the `t_refresh` position rewind after about 45 chunks and adaptive sink refresh are still not
   implemented in the host code).
 
-## Untuned baseline measured Track 2's way (looped clip, first 5 chunks excluded)
+## Untuned baseline measured like the tuned pipeline (looped clip, first 5 chunks excluded)
 
 `python e2e.py --chunks 25`: the 29-frame clip is looped to 25 stream chunks and the first 5 are excluded, the same
-accounting as Track 2's tuned 38.4 FPS run (`tier2/g4_e2e.py` on `tier2-g1`). Nothing else changed: one graph per
+accounting as the tuned 38.4 FPS run (`tier2/g4_e2e.py`). Nothing else changed: one graph per
 layer, KV caches through the host on every block call, TAEHV state through the host, one core, one chunk at a time.
-Raw numbers: `tier2/results/e2e_loop25.json`.
 
 | Steady state, chunks 5-24 (20 chunks) | |
 |---|---|
@@ -68,7 +67,7 @@ rescale `lat * std + mean`, TAEHV chunk f = pixel frames 4f..4f+3 with the decod
 looped by wrapping the frame index, 2 DiT passes per chunk at [adaptive first step, 500], fresh seeded noise
 (seed 1234), TAEHV state carried on the host side, first 5 chunks excluded.
 
-| | This baseline (`e2e.py --chunks 25`) | Track 2 tuned (`g4_e2e.py`) |
+| | This baseline (`e2e.py --chunks 25`) | Tuned pipeline (`g4_e2e.py`) |
 |---|---|---|
 | Cores | 1 | 4 |
 | DiT graphs | 30, one per layer | 4 stages of 8, 8, 7, 7 layers |
@@ -84,15 +83,15 @@ looped by wrapping the frame index, 2 DiT passes per chunk at [adaptive first st
 | Looped RoPE frame index | 2 to 26 | 3 to 122 (neither does the `t_refresh` rewind) |
 
 The first-step computation and uint8 conversion are part of this baseline's 19.7 ms of host overhead, so they cost
-it at most 3% relative to Track 2's accounting. The rest of the gap is the tuning itself.
+it at most 3% relative to the tuned pipeline's accounting. The rest of the gap is the tuning itself.
 
-Compared with the VAE on CPU (Track 2's figures: Wan encode 12.1 s, Wan decode 15.8 s per chunk), the same DiT
+Compared with the VAE on CPU (figures from the G2 run: Wan encode 12.1 s, Wan decode 15.8 s per chunk), the same DiT
 went from about 0.14 FPS to 5.64 FPS end to end. The DiT is now 90% of the chunk.
 
 ## How it is wired
 
-- **DiT:** the 13 layers missing on seat-230 were traced with the G1 method (one graph per layer, 3 at a time,
-  about 33 s each); all 30 are in `/workspace/livevid/artifacts/tier2/`. The host code is Track 2's
+- **DiT:** all 30 layers were traced with the G1 method (one graph per layer, 3 at a time,
+  about 33 s each) into `/workspace/livevid/artifacts/tier2/`. The host code is the G2 run's
   `g2_neuron.Runner`, unchanged: steps [700, 500] with the adaptive first step (610, 601, then 600), one KV cache
   set per denoising row, 3 sink frames, cached T5 embedding for the "anime" prompt.
 - **Lookahead fix:** TAEHV latent k is pixel frames 4k..4k+3, while Wan latent k is frames 4k-3..4k. The clip is
@@ -101,13 +100,13 @@ went from about 0.14 FPS to 5.64 FPS end to end. The DiT is now 90% of the chunk
 - **Scale fix:** TAEHV latents are mean/std normalised and the pipeline encodes un-normalised
   (`streamv2v/inference.py:148`), so latents are mapped with `lat * std + mean` before noise is added.
 - **Decode:** the DiT output is already in the normalised space TAEHV decodes; the first 3 decoded frames are
-  dropped. Output is 25 frames (1 + 4 x 6), the same 25 as Track 2's video.
+  dropped. Output is 25 frames (1 + 4 x 6), the same 25 as the G2 video.
 - The encoder fallback (Wan-encoded latents) was not needed.
 
-## Quality against Track 2's G2 output
+## Quality against the G2 output
 
 Same clip, prompt and schedule. To make the comparison meaningful the noise tensors of a CPU reference run
-(`g2_ref.py` on seat-230, same seed as Track 2's) were replayed, so the only differences are the TAEHV encoder,
+(`g2_ref.py`, same seed as the G2 run) were replayed, so the only differences are the TAEHV encoder,
 the TAEHV decoder and bf16.
 
 Encoder check inside the run: rescaled TAEHV latents vs the Wan encoder's latents, cosine 0.9980 to 0.9985 on all
@@ -117,23 +116,23 @@ PSNR of the all-Trainium output, per chunk of output frames:
 
 | Compared with | Frames 0-4 | 5-8 | 9-12 | 13-16 | 17-20 | 21-24 | All |
 |---|---|---|---|---|---|---|---|
-| Track 2 G2 video, Neuron DiT + Wan VAE (`g2_side_by_side.mp4`, right panel) | 26.3 | 25.6 | 25.6 | 26.1 | 26.8 | 27.1 | **26.2 dB** |
-| Track 2 G2 video, CPU reference + Wan VAE (middle panel) | 26.3 | 25.6 | 25.5 | 26.1 | 26.8 | 27.1 | 26.2 dB |
-| CPU reference latents from seat-230, decoded by the same Neuron TAEHV decoder | 27.1 | 26.2 | 26.0 | 26.7 | 27.5 | 28.1 | 26.9 dB |
+| G2 video, Neuron DiT + Wan VAE (right panel) | 26.3 | 25.6 | 25.6 | 26.1 | 26.8 | 27.1 | **26.2 dB** |
+| G2 video, CPU reference + Wan VAE (middle panel) | 26.3 | 25.6 | 25.5 | 26.1 | 26.8 | 27.1 | 26.2 dB |
+| CPU reference latents, decoded by the same Neuron TAEHV decoder | 27.1 | 26.2 | 26.0 | 26.7 | 27.5 | 28.1 | 26.9 dB |
 
 - No drift over the 6 chunks; the last chunks are the closest.
 - The third row removes the decoder difference and still shows 26.9 dB, so most of the gap comes from the TAEHV
   encoder's latents being amplified by the DiT, not from the TAEHV decoder.
-- Track 2's frames were read back from an mp4, so those two rows include video compression error.
-- Visually (`tier2/out/e2e_compare.png`, frames 0, 8, 16, 24): same character, pose, colours and ball position;
+- The G2 frames were read back from an mp4, so those two rows include video compression error.
+- Visually (frames 0, 8, 16, 24): same character, pose, colours and ball position;
   small differences in fine detail such as the eyes. With different noise the style holds but the content differs
   much more (18.1 dB), which is sampling variation, not an error.
 
 ## Resident TAEHV state (step 5)
 
-`tier2/vae_resident.py`, raw numbers in `tier2/results/vae_resident.json`. The 9 memories are parameters of the
+Script: `tier2/vae_resident.py`. The 9 memories are parameters of the
 traced module, aliased to its outputs with `input_output_aliases` and moved to the device with
-`move_trace_to_device` (the mechanism Track 2 used for the KV cache). Only the frames or the latent cross the host.
+`move_trace_to_device` (the mechanism used for the KV cache). Only the frames or the latent cross the host.
 
 | Per chunk, one core, 100 calls | State through the host (mean / p50 / p99) | State resident (mean / p50 / p99) | Parity vs CPU TAEHV, min cos over 8 chunks |
 |---|---|---|---|
@@ -150,9 +149,8 @@ traced module, aliased to its outputs with `input_output_aliases` and moved to t
 
 - Wiring the resident TAEHV graphs into `e2e.py` and re-measuring end to end.
 - Session start on Neuron (needs a 2-frame block graph).
-- seat-231 was not used; seat-232 and seat-234 were not touched.
 
-## Reproduce (seat-230)
+## Reproduce
 
 ```
 tier2/remote.sh push

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside the seat-234 pod from tier2/. Waits for the 4 stage graphs, warms the caches, then runs the
+# Runs inside the pod from tier2/. Waits for the 4 stage graphs, warms the caches, then runs the
 # pipeline on 4 cores and the same graphs sequentially on 1 core.
 set -uo pipefail
 A=/workspace/livevid/artifacts/tier2

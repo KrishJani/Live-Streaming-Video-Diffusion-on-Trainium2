@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside the seat-234 pod from tier2/. Device profile of the G1 block NEFF (random inputs) on core 0.
+# Runs inside the pod from tier2/. Device profile of the G1 block NEFF (random inputs) on core 0.
 set -uo pipefail
 NEFF=/workspace/livevid/artifacts/tier2/work/g1_block0_512x512_L1024_cache6144_sink3072_text512/graph.neff
 P=/workspace/livevid/artifacts/tier2/profile

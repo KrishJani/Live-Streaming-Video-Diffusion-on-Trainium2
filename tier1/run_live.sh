@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: tier1/run_live.sh [--restart-server | --stop-server] [client.py args...]
-# Starts tier1/server.py on the seat-233 pod if it is not already running, waits until it is
+# Starts tier1/server.py on the pod if it is not already running, waits until it is
 # ready, then starts the webcam client on this Mac. Client args: --record, --duration N, ...
 set -euo pipefail
 source "$(dirname "$0")/_seat.sh"

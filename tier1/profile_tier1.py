@@ -1,4 +1,4 @@
-"""Quick profile -> reports/tier1_profile.md.
+"""Quick profile -> docs/tier1-profile.md.
 
   1. per-core utilization (neuron-monitor) while the 4-core pool runs flat out
   2. per-engine active % and % of peak for one UNet call, from a neuron-explorer summary:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: tier1/pull.sh <remote_path> <local_dir>
-# Copies a file or directory out of the seat-233 pod into <local_dir> (created if missing),
+# Copies a file or directory out of the pod into <local_dir> (created if missing),
 # replacing any item of the same name. Relative remote paths resolve against /workspace/livevid.
 set -euo pipefail
 source "$(dirname "$0")/_seat.sh"

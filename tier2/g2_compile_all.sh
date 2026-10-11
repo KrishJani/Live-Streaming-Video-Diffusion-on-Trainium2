@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside the seat-234 pod from tier2/. Extracts all layer weights, then traces the 30 layers 3 at a time.
+# Runs inside the pod from tier2/. Extracts all layer weights, then traces the 30 layers 3 at a time.
 set -uo pipefail
 export OMP_NUM_THREADS=3 MKL_NUM_THREADS=3
 L=/workspace/livevid/logs/tier2

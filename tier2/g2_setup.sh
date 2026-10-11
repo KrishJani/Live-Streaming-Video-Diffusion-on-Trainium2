@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside the seat-234 pod. Idempotent: python deps the original repo imports, the wan_models layout it
+# Runs inside the pod. Idempotent: python deps the original repo imports, the wan_models layout it
 # expects (symlink to the HF snapshot), and the TAEHV weights (ckpts/taew2_1.pth).
 set -euo pipefail
 ROOT=/workspace/livevid/sdv2_root

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside the seat-233 pod. Usage: tier1/status.sh [lines] [log-name...]
+# Runs inside the pod. Usage: tier1/status.sh [lines] [log-name...]
 # Prints the tail of the tier1 job logs with progress bars and known noise removed.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 lines="${1:-12}"; shift || true

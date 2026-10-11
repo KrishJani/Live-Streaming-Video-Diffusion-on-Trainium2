@@ -1,4 +1,4 @@
-# G2 notes: quick facts
+# Tier 2 pipeline notes: pass count, VAE path and device profile
 
 Paths are relative to `repos/StreamDiffusionV2` (commit `6961a5c`). `pipe` = `models/wan/causal_stream_inference.py`,
 `inf` = `streamv2v/inference.py`, `cm` = `models/wan/causal_model.py`, `tw` = `models/wan/taehv_wrapper.py`,
@@ -40,11 +40,11 @@ full 30-layer run below: 0.65 s per chunk = **6.1 FPS** (DiT only).
 `--use_taehv` swaps in `TAEHVWanVAEWrapper` (`pipe:27-33`). It covers **decode only**: encoding still goes through
 the full Wan VAE encoder (`tw:390`, `tw:476-480`); decoding uses TAEHV in fp16 with a 3-latent context window
 (`tw:482-505`). Expected weights: `ckpts/taew2_1.pth` from `github.com/madebyollin/taehv` (`tw:45-46`).
-Downloaded to `seat-234:/workspace/livevid/sdv2_root/ckpts/taew2_1.pth`.
+Downloaded to `/workspace/livevid/sdv2_root/ckpts/taew2_1.pth` on the pod.
 
 ## c) Where one block call's 11.4 ms goes
 
-`neuron-explorer capture` on the G1 block NEFF, core 0 (`tier2/results/g2_profile_block0_summary.txt`).
+`neuron-explorer capture` on the G1 block NEFF, core 0 (`tier2/g2_profile.sh`).
 
 | | ms | share of 11.41 ms |
 |---|---|---|
@@ -65,7 +65,7 @@ Data crossing the host per call: about 42.6 MB in (two 18.9 MB caches, x, contex
 The two caches are 89% of it.
 
 **FLOPs per block call: 132.1 GFLOP** (`torch.utils.flop_counter` on the CPU port, 2 FLOPs per multiply-add:
-90.2 G in Linear layers + 41.9 G in attention matmuls; `tier2/results/g2_flops.json`). The profiler's own count,
+90.2 G in Linear layers + 41.9 G in attention matmuls; `tier2/g2_flops.py`). The profiler's own count,
 including transposes, is 161.3 G (`hardware_flops`).
 
 **Peak used: 130.7 TFLOPS per logical NeuronCore** (LNC = 2). This is the peak implied by the profiler itself:
@@ -77,9 +77,9 @@ including transposes, is 161.3 G (`hardware_flops`).
 | Device execution only, 4.21 ms | 31.4 TFLOPS | 24% |
 | Profiler's own MFU (its 161.3 G count over device time) | 38.3 TFLOPS | 29.3% |
 
-## Steps 1-3 (done on seat-234 before the re-scope)
+## Steps 1-3: full 30-block DiT against the CPU reference
 
-- CPU reference: the original `CausalStreamInferencePipeline` on CPU fp32, 29 frames of `tier1/test_clip.mp4`
+- CPU reference: the original `CausalStreamInferencePipeline` on CPU fp32, 29 frames of the test clip
   (every 2nd frame): 5-frame session start + 6 stream chunks. Adaptive sink off, steps [700, 500], seed 1234.
   T5 run once, embedding saved to `artifacts/tier2/g2/prompt_anime.pt` (29 real tokens).
 - 30 layers traced one graph per layer, 25 to 37 s each, 3 in parallel.
@@ -96,8 +96,8 @@ including transposes, is 161.3 G (`hardware_flops`).
 
 Gate 0.999: **PASS** (minimum 0.999960). The same host code with the fp32 CPU port instead of Neuron gives 1.000000
 on every chunk, so the remaining error is bf16 / Neuron, not host logic. Cosine drifts down slowly with chunk
-count; worth watching on longer runs. Video: `tier2/out/g2_side_by_side.mp4` (input | CPU ref | Neuron), TAEHV
-version alongside, stills in `tier2/out/g2_contact.png`.
+count; worth watching on longer runs. `tier2/g2_decode.py` writes the side-by-side video (input | CPU ref |
+Neuron), a TAEHV version and a contact sheet to `tier2/out/`.
 
 Timing per chunk on one core (2 passes = 60 block calls), steady state:
 

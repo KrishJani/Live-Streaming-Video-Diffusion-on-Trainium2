@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside the seat-234 pod from tier2/. Compiles the 4 resident-cache stage graphs in parallel.
+# Runs inside the pod from tier2/. Compiles the 4 resident-cache stage graphs in parallel.
 set -uo pipefail
 export OMP_NUM_THREADS=2 MKL_NUM_THREADS=2
 L=/workspace/livevid/logs/tier2

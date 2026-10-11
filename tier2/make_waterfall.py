@@ -3,7 +3,7 @@
     python make_waterfall.py [untuned_end_to_end_fps]
 
 tier2/out/fps_waterfall_dit.png   DiT only: untuned full model (G2) -> resident caches + 8-layer graphs -> 4 cores
-tier2/out/fps_waterfall_e2e.png   end to end incl. VAE: untuned baseline (Session C, 5.62 FPS by default) -> 4 cores
+tier2/out/fps_waterfall_e2e.png   end to end incl. VAE: untuned baseline (5.62 FPS by default) -> 4 cores
 """
 import json
 import sys
@@ -28,7 +28,7 @@ e2e = json.load(open(ART_DIR / "g4_e2e_4core.json"))["steady_state_fps"]
 g1 = json.load(open(ART_DIR / f"g1_block0_{TAG}_bench.json"))["latency_ms"]["mean"]
 r1 = json.load(open(ART_DIR / "g2_resident_1layers.json"))["latency_ms_call_plus_y_to_host"]["mean"]
 est = lambda ms: 4 / (ms / 1e3 * 30 * 2)
-# Untuned end-to-end baseline: Session C's looped-clip run on seat-230 (branch tier2-g2, commit 8b92545).
+# Untuned end-to-end baseline: the looped-clip run of e2e.py (docs/tier2-e2e-baseline.md).
 e2e_base = float(sys.argv[1]) if len(sys.argv) > 1 else 5.62
 
 
