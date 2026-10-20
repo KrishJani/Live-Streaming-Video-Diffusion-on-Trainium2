@@ -57,7 +57,10 @@ class Host:
     def patch(self, lat):  # [1, F, 16, h, w] -> [1, F * frame_tokens, dim]
         x = F.conv3d(lat.permute(0, 2, 1, 3, 4), self.w["patch_embedding.weight"], self.w["patch_embedding.bias"],
                      stride=(1, 2, 2))
-        return x.flatten(2).transpose(1, 2)
+        # contiguous(): the transpose alone is a strided view, and .to(BF16) keeps those strides, so the first
+        # stage graph would receive a non-contiguous 3 MB input and repack it on a single-threaded worker. Every
+        # later stage gets a contiguous .cpu() output. Values are unchanged.
+        return x.flatten(2).transpose(1, 2).contiguous()
 
     def time(self, t, frames):
         w, half = self.w, self.cfg.freq_dim // 2

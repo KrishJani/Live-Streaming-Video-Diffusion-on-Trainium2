@@ -9,14 +9,15 @@ import time
 
 import torch
 
+import lnc
 from block_port import ART_DIR, BlockCfg, CacheState, extract_all_layers, load_port, rope_cos_sin
 
 BF16 = torch.bfloat16
-COMPILER_ARGS = ["--auto-cast=none", "--model-type=transformer"]
+COMPILER_ARGS = ["--auto-cast=none", "--model-type=transformer"] + lnc.compiler_args()
 
 
 def artifact(cfg, layer):
-    return ART_DIR / f"block{layer:02d}_{cfg.tag}_bf16.pt"
+    return ART_DIR / f"block{layer:02d}_{cfg.tag}_bf16{lnc.suffix()}.pt"
 
 
 def compile_layer(cfg, layer):

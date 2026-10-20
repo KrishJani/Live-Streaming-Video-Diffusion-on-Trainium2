@@ -14,8 +14,7 @@ import numpy as np
 import torch
 
 from g2_common import NOISE_SCALE, STEPS, noise_scale_and_step, use_repo
-from g3_pipeline import SHM
-from g3_stage import STAGES
+from g3_pipeline import SHM, save_warm_caches
 
 MEAN = torch.tensor([-0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508,
                      0.4134, -0.0715, 0.5517, -0.3632, -0.1922, -0.9497, 0.2503, -0.2921]).view(1, 16, 1, 1)
@@ -64,13 +63,7 @@ def main():
     noisy2 = torch.randn_like(lat[:, 2:3]) * scale + lat[:, 2:3] * (1 - scale)
     x0_r0 = run.forward_row(0, noisy2, step, 2)
     x0_r1 = run.forward_row(1, run.host.renoise(x0_r0, torch.randn_like(x0_r0), STEPS[1]), STEPS[1], 2)
-    SHM.mkdir(parents=True, exist_ok=True)
-    for r in (0, 1):
-        for s, (a, b) in enumerate(STAGES):
-            flat = []
-            for st in run.rows[r][a:b]:
-                flat += [st.k.contiguous(), st.v.contiguous()]
-            torch.save(flat, SHM / f"row{r}_stage{s}.pt")
+    save_warm_caches(run.rows)  # per stage of the current LIVEVID_STAGES
     torch.save(run.ctx, SHM / "ctx.pt")
     torch.save({"finals": [x0s[-1], x0_r1], "clip": sys.argv[1], "noise_scale": scale}, SHM / "warm.pt")
     print(f"WARM OK clip={sys.argv[1]} frames={x01.shape[0]} fps={fps} noise_scale={scale:.3f} step={step}", flush=True)

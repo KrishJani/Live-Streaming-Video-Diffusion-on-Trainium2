@@ -15,6 +15,7 @@ Graph contract (all tensors, all shapes fixed at trace time):
     k_cache    [1, L_cache, heads, head_dim]     keys stored AFTER RoPE (same as the repo)
     v_cache    [1, L_cache, heads, head_dim]
     attn_bias  [1, 1, 1, L_cache]                additive, 0 = attend, MASK_NEG = empty slot; indexes the UPDATED cache
+    ctx_logw   [1, 1, 1, text_slots] fp32         optional; only with a compact context (see compact_context below)
 
 Cache update, no pointers in the graph:
 
@@ -69,6 +70,7 @@ class BlockCfg:
     text_dim: int = 4096
     freq_dim: int = 256
     eps: float = 1e-6
+    text_slots: int = 0         # 0: full text_len context; > 0: compact context of this many slots (compact_context)
 
     @property
     def grid_h(self): return self.height // 16
@@ -92,9 +94,12 @@ class BlockCfg:
     def head_dim(self): return self.dim // self.num_heads
 
     @property
+    def ctx_len(self): return self.text_slots or self.text_len
+
+    @property
     def tag(self):
         return (f"{self.height}x{self.width}_L{self.l_chunk}_cache{self.l_cache}_sink{self.sink_tokens}"
-                f"_text{self.text_len}")
+                f"_text{self.text_len}" + (f"_ctx{self.text_slots}" if self.text_slots else ""))
 
 
 class RMSNorm(nn.Module):
@@ -169,6 +174,18 @@ class CausalBlockPort(nn.Module):
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=bias)
         return out.transpose(1, 2).flatten(2)
 
+    def _attend_counted(self, q, k, v, logw):
+        """Attention in which key j stands for exp(logw[j]) identical keys; logw [1, 1, 1, Lk] fp32.
+
+        n identical keys (with identical values) get the same softmax mass as one copy whose score is raised by
+        log(n), so this reproduces attention over the full context exactly. Scores and softmax run in fp32 so
+        log(n) is not rounded to bf16; MASK_NEG marks unused slots.
+        """
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        w = torch.matmul(q, k.transpose(-1, -2)).float() * (self.head_dim ** -0.5) + logw
+        out = torch.matmul(torch.softmax(w, dim=-1).to(v.dtype), v)
+        return out.transpose(1, 2).flatten(2)
+
     def _per_frame(self, x, scale, shift=None):
         """Apply per-frame modulation ([1, F, 1, dim]) to tokens [1, F * frame_tokens, dim]."""
         x = x.reshape(1, self.frames, self.frame_tokens, -1) * scale
@@ -176,7 +193,7 @@ class CausalBlockPort(nn.Module):
             x = x + shift
         return x.reshape(1, self.l_chunk, -1)
 
-    def forward(self, x, e, context, rope_cos, rope_sin, k_cache, v_cache, attn_bias):
+    def forward(self, x, e, context, rope_cos, rope_sin, k_cache, v_cache, attn_bias, ctx_logw=None):
         n, d, lc, s = self.num_heads, self.head_dim, self.l_chunk, self.sink_tokens
         e0, e1, e2, e3, e4, e5 = (self.modulation.unsqueeze(1) + e).chunk(6, dim=2)  # each [1, F, 1, dim]
 
@@ -196,7 +213,10 @@ class CausalBlockPort(nn.Module):
         hq = ca.norm_q(ca.q(self.norm3(x))).view(1, lc, n, d)
         ck = ca.norm_k(ca.k(context)).view(1, -1, n, d)
         cv = ca.v(context).view(1, -1, n, d)
-        x = x + ca.o(self._attend(hq, ck, cv))
+        if ctx_logw is None:
+            x = x + ca.o(self._attend(hq, ck, cv))
+        else:  # compact context: one row per distinct text row, weighted by its count
+            x = x + ca.o(self._attend_counted(hq, ck, cv, ctx_logw))
 
         # feed-forward
         y = self.ffn(self._per_frame(self.norm2(x), 1 + e4, e3))
@@ -226,6 +246,28 @@ def rope_cos_sin(cfg: BlockCfg, start_frame: int, dtype=torch.float32):
     ww = angles(torch.arange(w), 2 * (d // 6)).repeat(h, 1).repeat(f, 1)
     ang = torch.cat([t, hh, ww], dim=-1).view(1, f * h * w, 1, d // 2)
     return torch.cos(ang).to(dtype), torch.sin(ang).to(dtype)
+
+
+def compact_context(context, slots):
+    """Collapse identical rows of the text context into one row each, weighted by log(count).
+
+    context: [1, text_len, dim] AFTER text_embedding, any dtype. Returns (ctx [1, slots, dim] in context's dtype,
+    logw [1, 1, 1, slots] fp32): one row per distinct context row with logw = log(count); unused slots are zero
+    rows with logw = MASK_NEG. CausalBlockPort(..., ctx_logw=logw) on this gives the same output as the full
+    context: the repo zero-pads the prompt embedding to text_len and attends without a mask, and every padding row
+    embeds to the same vector, so ~29 real tokens + 483 identical padding rows fit in ~30 slots. Row order does not
+    matter (attention is permutation invariant over keys). Done once per prompt, on the host.
+    """
+    rows, counts = torch.unique(context[0].float(), dim=0, return_counts=True)
+    n = rows.shape[0]
+    if n > slots:
+        raise ValueError(f"the context has {n} distinct rows but only {slots} slots; raise text_slots "
+                         f"(LIVEVID_TEXT_SLOTS) and recompile the stage graphs")
+    ctx = torch.zeros(1, slots, context.shape[-1], dtype=context.dtype)
+    ctx[0, :n] = rows.to(context.dtype)
+    logw = torch.full((1, 1, 1, slots), MASK_NEG, dtype=torch.float32)
+    logw[0, 0, 0, :n] = counts.double().log().float()
+    return ctx, logw
 
 
 class CacheState:
