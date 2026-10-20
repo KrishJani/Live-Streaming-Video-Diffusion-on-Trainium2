@@ -26,17 +26,22 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+import lnc
 from g2_common import ART, OUT, SDV2_ROOT, load_clip, psnr, to_u8, use_repo
 
 VAE_DIR = ART / "vae"
 BF16 = torch.bfloat16
-COMPILER_ARGS = ["--auto-cast=none"]
+COMPILER_ARGS = ["--auto-cast=none"] + lnc.compiler_args()
 N_FRAMES = 29   # 5-frame session start + 6 stream chunks, same frames as the G2 run
 GATE = 0.999
 
 
 def artifact(which):
-    return VAE_DIR / f"taehv_{which}_512x512_bf16.pt"
+    return VAE_DIR / f"taehv_{which}_512x512_bf16{lnc.suffix()}.pt"
+
+
+def compile_meta(which):
+    return VAE_DIR / f"taehv_{which}_compile{lnc.suffix()}.json"
 
 
 def load_taehv():
@@ -114,7 +119,7 @@ def compile_one(which):
                                  compiler_args=COMPILER_ARGS)
     dt = time.perf_counter() - t0
     torch.jit.save(traced, str(artifact(which)))
-    (VAE_DIR / f"taehv_{which}_compile.json").write_text(json.dumps(
+    compile_meta(which).write_text(json.dumps(
         {"which": which, "compile_s": round(dt, 1), "compiler_args": COMPILER_ARGS, "input_shapes": shapes,
          "state_mb_bf16": round(sum(int(np.prod(s)) for s in shapes[1:]) * 2 / 1e6, 1)}) + "\n")
     print(f"{which}: COMPILE OK {dt:.1f}s  inputs {shapes}", flush=True)
@@ -190,7 +195,7 @@ def evaluate():
     mods = {}
     for which in ("enc", "dec"):
         mods[which] = (torch.jit.load(str(artifact(which))),
-                       json.loads((VAE_DIR / f"taehv_{which}_compile.json").read_text())["input_shapes"][1:])
+                       json.loads(compile_meta(which).read_text())["input_shapes"][1:])
     n = x32.shape[0] // 4
 
     # ---- parity: Neuron bf16 (chunked, own state fed back) vs repo TAEHV on CPU fp32 (one sequential pass) ----
@@ -238,7 +243,7 @@ def evaluate():
     res = {"gate": GATE, "min_cosine": min_cos, "pass": bool(min_cos >= GATE), "parity": parity,
            "quality": quality, "quality_all_frames": overall, "latency_ms": latency, "cpu_s": r["cpu_s"],
            "port_check_fp32": r["port_check"],
-           "compile": {w: json.loads((VAE_DIR / f"taehv_{w}_compile.json").read_text()) for w in ("enc", "dec")}}
+           "compile": {w: json.loads(compile_meta(w).read_text()) for w in ("enc", "dec")}}
     (VAE_DIR / "vae_neuron.json").write_text(json.dumps(res, indent=2) + "\n")
 
     OUT.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,6 @@
 """Shared constants and host-side helpers for the tier1 sd-turbo img2img pipeline."""
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -64,6 +65,35 @@ ARTIFACTS = {
     "vae_enc": f"sdturbo_vae_enc_1x3x{SIZE}x{SIZE}_bf16.pt",
 }
 CONSTS_FILE = "sdturbo_consts_embeds_1x77x1024_fp32.pt"
+
+# Logical NeuronCore config. Trn2 defaults to LNC=2 (4 logical cores per chip, each two physical cores);
+# NEURON_LOGICAL_NC_CONFIG=1 exposes the 8 physical cores separately. Graphs must be compiled for the LNC the
+# runtime uses, so the same variable drives both: export it for compile and for the server / benchmark.
+LNC_ENV = "NEURON_LOGICAL_NC_CONFIG"
+
+
+def lnc():
+    v = os.environ.get(LNC_ENV, "").strip()
+    if v not in ("", "1", "2"):
+        raise ValueError(f"{LNC_ENV}={v!r}: only 1 and 2 are supported")
+    return int(v or 2)
+
+
+def lnc_compiler_args():
+    v = os.environ.get(LNC_ENV, "").strip()
+    return [f"--logical-nc-config={v}"] if v else []
+
+
+def artifact_name(component):
+    """File name of a compiled component; LNC=1 builds get an _lnc1 suffix so they never mix with LNC=2 ones."""
+    name = ARTIFACTS[component]
+    return name.replace(".pt", "_lnc1.pt") if lnc() == 1 else name
+
+
+def pool_cores():
+    """Worker cores for the server and the multi-core benchmark: LIVEVID_CORES (e.g. 0,1,2,3,4,5,6,7 with LNC=1),
+    default 0,1,2,3."""
+    return tuple(int(c) for c in os.environ.get("LIVEVID_CORES", "0,1,2,3").split(","))
 
 
 def turbo_schedule(cfg, num_inference_steps=NUM_INFERENCE_STEPS, strength=STRENGTH):

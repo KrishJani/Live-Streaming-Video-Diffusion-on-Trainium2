@@ -197,6 +197,9 @@ Key design points:
     ├── g4_e2e.py             End-to-end pipeline including TAEHV encode and decode
     ├── g5_clip.py            Warm-up for running the pipeline on an arbitrary clip
     ├── vae_neuron.py         TAEHV encoder and decoder as streaming Neuron graphs
+    ├── vae_resident.py       TAEHV with its temporal state resident on the device
+    ├── check_ctx_compact.py  CPU check that the compact cross-attention context is exact
+    ├── lnc.py                Logical NeuronCore setting shared by compile and runtime
     └── e2e.py                Untuned single-core end-to-end baseline
 ```
 
@@ -283,9 +286,15 @@ tier2/remote.sh run "./g3_run_all.sh"
 
 # 4. TAEHV encoder and decoder, then the end-to-end pipeline
 tier2/remote.sh run "python -u vae_neuron.py compile enc && python -u vae_neuron.py compile dec"
+tier2/remote.sh run "python -u vae_neuron.py ref && python -u vae_resident.py"   # optional: TAEHV state on the device
 tier2/remote.sh run "python -u g4_e2e.py --chunks 120"
 tier2/remote.sh run "python -u g4_e2e.py --chunks 120 --inflight 3"   # lower latency
 ```
+
+`g4_e2e.py` uses the resident TAEHV graphs when `vae_resident.py` has saved them (`--vae host` for the original
+path). The 38.4 FPS figure above was measured with the host-state graphs. Stage split, cores, VAE placement, a
+compact cross-attention context, LNC=1 builds and a 1-step mode are all options; see
+[docs/pipeline-options.md](docs/pipeline-options.md). None of their effects has been measured on hardware yet.
 
 To stylize your own clip:
 
@@ -306,6 +315,7 @@ tier2/remote.sh run "python -u g4_e2e.py --clip data/my_clip_512.mp4 --out out/m
 | [docs/tier2-pipeline-notes.md](docs/tier2-pipeline-notes.md) | Pass count per chunk, VAE path, device profile of a block call |
 | [docs/tier2-vae.md](docs/tier2-vae.md) | TAEHV encoder and decoder on Neuron: parity, quality, latency |
 | [docs/tier2-e2e-baseline.md](docs/tier2-e2e-baseline.md) | Untuned single-core end-to-end baseline |
+| [docs/pipeline-options.md](docs/pipeline-options.md) | Stage split, resident TAEHV, compact context, LNC=1, 1-step mode: what each does and how to measure it |
 
 ## Known limitations
 

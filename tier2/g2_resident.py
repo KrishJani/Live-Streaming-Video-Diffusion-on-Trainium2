@@ -20,14 +20,18 @@ import time
 import torch
 import torch.nn as nn
 
+import lnc
 from block_port import ART_DIR, BlockCfg, CacheState, CausalBlockPort, cosine, make_inputs, max_abs, rope_cos_sin, extract_weights
 
 BF16 = torch.bfloat16
-COMPILER_ARGS = ["--auto-cast=none", "--model-type=transformer"]
+COMPILER_ARGS = ["--auto-cast=none", "--model-type=transformer"] + lnc.compiler_args()
 
 
 class ResidentBlocks(nn.Module):
-    """N chained blocks whose caches are module state. Outputs: (y, k_0, v_0, k_1, v_1, ...)."""
+    """N chained blocks whose caches are module state. Outputs: (y, k_0, v_0, k_1, v_1, ...).
+
+    ctx_logw is only passed for graphs traced with a compact context (block_port.compact_context).
+    """
 
     def __init__(self, ports, caches):
         super().__init__()
@@ -35,10 +39,10 @@ class ResidentBlocks(nn.Module):
         self.k = nn.ParameterList([nn.Parameter(k.clone(), requires_grad=False) for k, _ in caches])
         self.v = nn.ParameterList([nn.Parameter(v.clone(), requires_grad=False) for _, v in caches])
 
-    def forward(self, x, e, context, rope_cos, rope_sin, attn_bias):
+    def forward(self, x, e, context, rope_cos, rope_sin, attn_bias, ctx_logw=None):
         out = []
         for port, k, v in zip(self.ports, self.k, self.v):
-            x, nk, nv = port(x, e, context, rope_cos, rope_sin, k, v, attn_bias)
+            x, nk, nv = port(x, e, context, rope_cos, rope_sin, k, v, attn_bias, ctx_logw)
             out += [nk, nv]
         return (x, *out)
 

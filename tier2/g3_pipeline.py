@@ -2,9 +2,12 @@
 
     python g3_pipeline.py warm                          session start + sink fill on the host path, dump cache states
     python g3_pipeline.py run --cores 0,1,2,3           4-core pipeline, chunks fed back to back
-    python g3_pipeline.py run --cores 0,0,0,0 --inflight 1 --name 1core     same 4 graphs, one core, sequential
+    python g3_pipeline.py run1 --name 1core             same graphs in one process on one core, sequential
+                                                        (several processes cannot share a NeuronCore)
 
-Stages: layers 0-7, 8-15, 16-22, 23-29 (g3_stage.py). Each stage process holds TWO instances of its graph, one
+Stages: layers 0-7, 8-15, 16-22, 23-29 by default; LIVEVID_STAGES changes the split and the number of stages
+(g3_stage.py), and must be the same for compile, warm and run. --cores defaults to one core per stage, in order.
+Each stage process holds TWO instances of its graph, one
 per denoising row (row 0 = first step, row 1 = step 500), because every row has its own caches. Only the hidden
 state x (3 MB bf16) and the small per-call inputs (time modulation, RoPE, bias) move between stages.
 
@@ -26,12 +29,43 @@ from pathlib import Path
 import torch
 import torch.multiprocessing as mp
 
-from block_port import ART_DIR, MASK_NEG, BlockCfg, cosine, max_abs, rope_cos_sin
+import lnc
+from block_port import ART_DIR, MASK_NEG, BlockCfg, compact_context, cosine, max_abs, rope_cos_sin
 from g2_common import G2, OUT, STEPS
-from g3_stage import STAGES, stage_path
+from g3_stage import STAGES, stage_cfg, stage_path
 
 BF16 = torch.bfloat16
 SHM = Path("/dev/shm/g3")
+
+
+def warm_path(row, a, b):
+    """Warmed K/V of layers a..b-1 for one denoising row. Named by layer range, so a run whose LIVEVID_STAGES
+    differs from the warm-up's fails loudly instead of loading the wrong layers."""
+    return SHM / f"row{row}_layers{a:02d}_{b:02d}.pt"
+
+
+def save_warm_caches(rows):
+    """rows[r][layer] is that layer's CacheState; writes one file per (row, stage) of the current STAGES."""
+    SHM.mkdir(parents=True, exist_ok=True)
+    for r, states in enumerate(rows):
+        for a, b in STAGES:
+            flat = []
+            for st in states[a:b]:
+                flat += [st.k.contiguous(), st.v.contiguous()]
+            torch.save(flat, warm_path(r, a, b))
+
+
+def stage_context(cfg=None):
+    """The text context the stage graphs take, plus any extra trailing graph inputs.
+
+    Full context: (ctx [1, 512, dim], ()). Compact (LIVEVID_TEXT_SLOTS > 0): (ctx [1, slots, dim], (logw,)).
+    """
+    cfg = cfg or stage_cfg()
+    ctx = torch.load(SHM / "ctx.pt")
+    if not cfg.text_slots:
+        return ctx, ()
+    ctx, logw = compact_context(ctx, cfg.text_slots)
+    return ctx, (logw,)
 
 
 def warm():
@@ -43,14 +77,9 @@ def warm():
     x0_r0 = run.forward_row(0, c0["noisy"][:, :1], c0["current_step"], 2)
     hidden = run.host.renoise(x0_r0, c0["noise"].view_as(x0_r0), STEPS[1])
     x0_r1 = run.forward_row(1, hidden, STEPS[1], 2)
-    SHM.mkdir(parents=True, exist_ok=True)
     for r in (0, 1):
         assert run.rows[r][0].frames == [0, 1, 2, None, None, None]
-        for s, (a, b) in enumerate(STAGES):
-            flat = []
-            for st in run.rows[r][a:b]:
-                flat += [st.k.contiguous(), st.v.contiguous()]
-            torch.save(flat, SHM / f"row{r}_stage{s}.pt")
+    save_warm_caches(run.rows)
     torch.save(run.ctx, SHM / "ctx.pt")
     torch.save({"finals": [x0s[-1], x0_r1], "frame2_cos": cosine(x0_r1, c1["x0"][1])}, SHM / "warm.pt")
     print(f"WARM OK frame-2 final cos vs ref {cosine(x0_r1, c1['x0'][1]):.6f}", flush=True)
@@ -63,7 +92,11 @@ def load_stage(stage, a, b, row):
     """
     import torch_neuronx
     m = torch.jit.load(str(stage_path(a, b)))
-    state = torch.load(SHM / f"row{row}_stage{stage}.pt")  # saved as k0, v0, k1, v1, ...
+    path = warm_path(row, a, b)
+    if not path.exists():
+        raise FileNotFoundError(f"{path} missing: run the warm-up (g3_pipeline.py warm or g5_clip.py) with the "
+                                f"same LIVEVID_STAGES as this run ({STAGES})")
+    state = torch.load(path)  # saved as k0, v0, k1, v1, ...
     # torch_neuronx re-keys the alias map in module-parameter order while tracing (hlo_conversion.py
     # move_state_to_device), so the traced states are k0..kN-1 followed by v0..vN-1, not interleaved.
     state = state[0::2] + state[1::2]
@@ -83,7 +116,8 @@ def run_one_process(args):
     ref = torch.load(G2 / "ref.pt")
     host = Host(cfg, torch.load(G2 / "prompt_anime.pt")["prompt_embeds"])
     warm_data = torch.load(SHM / "warm.pt")
-    calls, ctx = ref["calls"], torch.load(SHM / "ctx.pt")
+    calls = ref["calls"]
+    ctx, extra = stage_context()
     t0 = time.time()
     graphs = [[load_stage(s, a, b, r) for s, (a, b) in enumerate(STAGES)] for r in (0, 1)]
     print(f"8 graphs loaded on core 0 in {time.time() - t0:.0f}s", flush=True)
@@ -99,7 +133,7 @@ def run_one_process(args):
         x, e0, bias = host.patch(lat).to(BF16), e0.to(BF16), bias_for(j)
         t = time.perf_counter()
         for g in graphs[row]:
-            x = g(x, e0, ctx, cos_, sin_, bias)[0].cpu()
+            x = g(x, e0, ctx, cos_, sin_, bias, *extra)[0].cpu()
         dit_s.append(time.perf_counter() - t)
         return host.to_x0(host.head(x.float(), e, 1), lat, step)
 
@@ -138,11 +172,7 @@ def worker(stage, core, a, b, q_in, q_out, ready):
     import torch_neuronx
     torch.set_grad_enabled(False)
     torch.set_num_threads(1)
-    cfg = BlockCfg()
-    ctx = torch.load(SHM / "ctx.pt")
-    cos_, sin_ = (t.to(BF16) for t in rope_cos_sin(cfg, 0))
-    dummy = (torch.zeros(1, cfg.l_chunk, cfg.dim, dtype=BF16), torch.zeros(1, 1, 6, cfg.dim, dtype=BF16), ctx, cos_,
-             sin_, torch.zeros(1, 1, 1, cfg.l_cache, dtype=BF16))
+    ctx, extra = stage_context()
     rows = [load_stage(stage, a, b, r) for r in (0, 1)]
     ready.put(stage)
     while True:
@@ -152,7 +182,7 @@ def worker(stage, core, a, b, q_in, q_out, ready):
             return
         jid, row, x, e0, cos_, sin_, bias, times = job
         t = time.perf_counter()
-        y = rows[row](x, e0, ctx, cos_, sin_, bias)[0].cpu()
+        y = rows[row](x, e0, ctx, cos_, sin_, bias, *extra)[0].cpu()
         q_out.put((jid, row, y, e0, cos_, sin_, bias, times + [time.perf_counter() - t]))
 
 
@@ -192,7 +222,9 @@ def run(args):
     torch.set_grad_enabled(False)
     torch.set_num_threads(4)
     cfg = BlockCfg()
-    cores = [int(c) for c in args.cores.split(",")]
+    cores = [int(c) for c in args.cores.split(",")] if args.cores else list(range(len(STAGES)))
+    if len(cores) != len(STAGES):
+        raise ValueError(f"--cores lists {len(cores)} cores for {len(STAGES)} stages ({STAGES})")
     ref = torch.load(G2 / "ref.pt")
     host = Host(cfg, torch.load(G2 / "prompt_anime.pt")["prompt_embeds"])
     warm_data = torch.load(SHM / "warm.pt")
@@ -279,7 +311,7 @@ def run(args):
            "chunk_latency_ms": {"mean": round(sum(lat_ms) / len(lat_ms), 1), "p50": round(sorted(lat_ms)[len(lat_ms) // 2], 1),
                                 "max": round(max(lat_ms), 1)},
            "stage_call_ms_mean": [round(1e3 * sum(t) / len(t), 2) for t in stage_times],
-           "stage_layers": STAGES, "parity": parity, "frame2_final_cos_warm": warm_data["frame2_cos"],
+           "stage_layers": STAGES, "text_slots": stage_cfg().text_slots, "lnc": lnc.lnc(), "parity": parity, "frame2_final_cos_warm": warm_data["frame2_cos"],
            "min_final_cos": min(finals + [warm_data["frame2_cos"]]),
            "monitor": monitor_parse(mon_path, t_start_wall, t_end_wall)}
     res["pass"] = bool(res["min_final_cos"] >= 0.999)
@@ -292,7 +324,7 @@ def run(args):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["warm", "run", "run1"])
-    ap.add_argument("--cores", default="0,1,2,3")
+    ap.add_argument("--cores", default=None, help="one core per stage, comma separated (default 0..N-1)")
     ap.add_argument("--inflight", type=int, default=6)
     ap.add_argument("--chunks", type=int, default=30)
     ap.add_argument("--name", default="4core")
