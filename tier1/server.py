@@ -25,13 +25,14 @@ from collections import deque
 import cv2
 import numpy as np
 
-from common import SIZE, SMOOTH, STYLE_STRENGTH, STYLES
+from common import SIZE, SMOOTH, STYLE_STRENGTH, STYLES, pool_cores
 from proto import pack, read_msg
 
 HOST, PORT = "127.0.0.1", 9000
-CORES = (0, 1, 2, 3)
+CORES = pool_cores()  # LIVEVID_CORES, default 0,1,2,3; with NEURON_LOGICAL_NC_CONFIG=1 up to 8 cores
 # neuron-monitor numbers this pod's cores 2 ahead of NEURON_RT_VISIBLE_CORES (wrapping at 4):
-# load on visible core 1 shows up under monitor index 3.
+# load on visible core 1 shows up under monitor index 3. Measured with LNC=2 only; the mapping for other
+# core counts has not been checked, so the per-core utilisation display may be mislabelled there.
 MONITOR_INDEX_OFFSET = 2
 FPS_WINDOW_S = 2.0
 RATE_WINDOW_S = 5.0

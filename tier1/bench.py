@@ -17,7 +17,8 @@ from collections import deque
 
 import numpy as np
 
-from common import ART_DIR, ARTIFACTS, INPUT_DIR, REPORT_DIR, TIER1_DIR, percentile, write_json
+from common import (ART_DIR, ARTIFACTS, INPUT_DIR, REPORT_DIR, TIER1_DIR, artifact_name, lnc, percentile, pool_cores,
+                    write_json)
 
 DIFF_STRIDE = 4          # the similarity filter looks at every 4th pixel in each dimension
 DEFAULT_SKIP_THRESHOLD = 3.0  # mean abs difference on the 0..255 scale
@@ -222,7 +223,7 @@ def write_markdown(res, path):
     for thr, rate in sf["sweep"].items():
         lines.append(f"| {thr} | {rate * 100:.1f}% |")
     run = sf["four_core_run"]
-    lines += ["", f"4 cores with threshold {sf['threshold']}: skipped {run['skipped']}/{run['frames']} "
+    lines += ["", f"{res['summary'].get('pool_cores', 4)} cores with threshold {sf['threshold']}: skipped {run['skipped']}/{run['frames']} "
               f"({run['skip_rate'] * 100:.1f}%), delivered **{run['fps_delivered']} FPS** "
               f"({run['fps_processed']} FPS actually processed).", ""]
     with open(path, "w") as f:
@@ -240,8 +241,8 @@ def main():
 
     frames, source = load_frames(args.frames)
     res = {"frames": args.frames, "frame_source": source, "style": args.style, "env": neuron_env(), "compile": {}}
-    for name, fname in ARTIFACTS.items():
-        meta = (ART_DIR / fname).with_suffix(".meta.json")
+    for name in ARTIFACTS:
+        meta = (ART_DIR / artifact_name(name)).with_suffix(".meta.json")
         res["compile"][name] = json.load(open(meta)) if meta.exists() else {}
 
     ctx = mp.get_context("spawn")
@@ -253,7 +254,8 @@ def main():
     print("single_core " + json.dumps(res["single_core"]), flush=True)
 
     res["pool"] = []
-    for cores in ((0,), (0, 1, 2, 3)):
+    multi = pool_cores()  # LIVEVID_CORES, default 0,1,2,3
+    for cores in ((multi[0],), multi):
         pool = CorePool(cores, style=args.style)
         for depth in (1, 2):
             pool.run_stream(frames[:20 * len(cores)], depth=depth)  # settle queues
@@ -261,7 +263,7 @@ def main():
             info["cores"] = len(cores)
             res["pool"].append(info)
             print("pool " + json.dumps(info), flush=True)
-        if len(cores) == 4:
+        if len(cores) == len(multi):
             from make_clip import read_mp4
             clip_path = TIER1_DIR / "test_clip.mp4"
             clip = read_mp4(clip_path) if clip_path.exists() else frames
@@ -286,8 +288,10 @@ def main():
         pool.close()
 
     one = next(r for r in res["pool"] if r["cores"] == 1 and r["depth_per_worker"] == 2)
-    four = next(r for r in res["pool"] if r["cores"] == 4 and r["depth_per_worker"] == 2)
-    res["summary"] = {"fps_1core_inprocess": res["single_core"]["fps"], "fps_1core_pool": one["fps_delivered"],
+    four = next(r for r in res["pool"] if r["cores"] == len(multi) and r["depth_per_worker"] == 2)
+    # keys keep their historical "4core" names; "pool_cores" records how many cores the multi-core runs used
+    res["summary"] = {"pool_cores": len(multi), "lnc": lnc(),
+                      "fps_1core_inprocess": res["single_core"]["fps"], "fps_1core_pool": one["fps_delivered"],
                       "fps_4core_pool": four["fps_delivered"],
                       "scaling_4_vs_1_pool": round(four["fps_delivered"] / one["fps_delivered"], 2)}
     write_json(args.out + ".json", res)

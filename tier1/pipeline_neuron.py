@@ -17,8 +17,9 @@ import torch
 import torch.nn as nn
 
 from common import (ART_DIR, ARTIFACTS, CONSTS_FILE, INPUT_DIR, LATENT, MODEL_ID, OUT_DIR, REF_DIR,
-                    REPORT_DIR, SEED, SIZE, STRENGTH, STYLES, STYLES_V1, TAESD_ID, cosine, frame_to_tensor, psnr_u8,
-                    strength_to_timestep, tensor_to_frame, turbo_schedule, write_json)
+                    REPORT_DIR, SEED, SIZE, STRENGTH, STYLES, STYLES_V1, TAESD_ID, artifact_name, cosine,
+                    frame_to_tensor, lnc_compiler_args, psnr_u8, strength_to_timestep, tensor_to_frame,
+                    turbo_schedule, write_json)
 
 BF16 = torch.bfloat16
 
@@ -108,7 +109,8 @@ def compile_component(component, force=False, compiler_args=None, tag="", core=0
     # Without this the runtime claims all 4 cores and fails if another process holds any of them.
     os.environ.setdefault("NEURON_RT_VISIBLE_CORES", str(core))
     ART_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = ART_DIR / (ARTIFACTS[component] if not tag else ARTIFACTS[component].replace(".pt", f"_{tag}.pt"))
+    name = artifact_name(component)
+    out_path = ART_DIR / (name if not tag else name.replace(".pt", f"_{tag}.pt"))
     meta_path = out_path.with_suffix(".meta.json")
     meta = json.load(open(meta_path)) if meta_path.exists() else {}
     model, ref, cpu_fp32_s, example = build_component(component)
@@ -120,6 +122,7 @@ def compile_component(component, force=False, compiler_args=None, tag="", core=0
             compiler_args = ["--auto-cast=none"]
             if component == "unet":
                 compiler_args.append("--model-type=unet-inference")
+            compiler_args += lnc_compiler_args()
         workdir = ART_DIR / "work" / out_path.stem
         workdir.mkdir(parents=True, exist_ok=True)
         print(f"compiling {component} args={compiler_args} workdir={workdir}", flush=True)
@@ -210,9 +213,9 @@ class NeuronTurbo:
         self.embeds = consts["embeds" if prompts == "current" else "embeds_v1"]
         self.noise = consts["noise"]
         self.encoder = encoder
-        self.enc = torch.jit.load(str(art_dir / ARTIFACTS["taesd_enc" if encoder == "taesd" else "vae_enc"]))
-        self.unet = torch.jit.load(str(art_dir / ARTIFACTS["unet"]))
-        self.dec = torch.jit.load(str(art_dir / ARTIFACTS["taesd_dec"]))
+        self.enc = torch.jit.load(str(art_dir / artifact_name("taesd_enc" if encoder == "taesd" else "vae_enc")))
+        self.unet = torch.jit.load(str(art_dir / artifact_name("unet")))
+        self.dec = torch.jit.load(str(art_dir / artifact_name("taesd_dec")))
         self.smooth = smooth
         self.prev_x0 = None
         self.set_strength(strength)
