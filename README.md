@@ -1,4 +1,4 @@
-# LiveVid: real-time video stylization on AWS Trainium2
+# LiveVid: real-time video diffusion on AWS Trainium2
 
 LiveVid restyles video in real time on AWS Trainium2 (`trn2.48xlarge`) using `torch-neuronx`. It contains two
 pipelines, both running fully on NeuronCores:
